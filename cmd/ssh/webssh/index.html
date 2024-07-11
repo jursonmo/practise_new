@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SSH Web Client</title>
+</head>
+<body>
+    <h1>SSH Web Client</h1>
+    <label for="host">Host:</label>
+    <input type="text" id="host" required>
+    <br>
+    <label for="port">Port:</label>
+    <input type="number" id="port" value="22" required>
+    <br>
+    <label for="username">Username:</label>
+    <input type="text" id="username" required>
+    <br>
+    <label for="password">Password:</label>
+    <input type="password" id="password" required>
+    <br>
+    <label for="command">Command:</label>
+    <input type="text" id="command" required>
+    <br>
+    <button onclick="sendCommand()">Execute</button>
+    <pre id="output"></pre>
+
+    <script>
+        function sendCommand() {
+            const host = document.getElementById('host').value;
+            const port = document.getElementById('port').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const command = document.getElementById('command').value;
+
+            const ws = new WebSocket('ws://localhost:8080/ws');
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ host, port, username, password, command }));
+            };
+
+            ws.onmessage = (event) => {
+                const { output, error } = JSON.parse(event.data);
+                document.getElementById('output').textContent += output || error;
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+    </script>
+</body>
+</html>
