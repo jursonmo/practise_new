@@ -14,6 +14,7 @@ func main() {
 	time.Sleep(time.Second * 2)
 	fmt.Println("close channel")
 	close(ch)
+	//close(ch) //close 一个已经关闭的channel，会panic
 	time.Sleep(time.Hour)
 	for {
 		select {}
