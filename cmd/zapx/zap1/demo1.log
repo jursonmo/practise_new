@@ -1,0 +1,10 @@
+{"l":"info","ts":"2024-07-28T22:55:43+08:00","c":"log/log.go:32","msg":"demo1:","app":"start ok","major version":2}
+{"l":"info","ts":"2024-07-28T22:55:43+08:00","c":"log/log.go:32","msg":"call foo","url":"https://tonybai.com","attempt":3}
+{"l":"warn","ts":"2024-07-28T22:55:43+08:00","c":"log/log.go:36","msg":"test warn","tester":"mjw"}
+{"l":"error","ts":"2024-07-28T22:55:43+08:00","c":"log/log.go:40","msg":"test error level","tester":"mjw"}
+{"l":"debug","ts":"2024-07-28T22:55:43+08:00","c":"log/log.go:28","msg":"test modify log level","modify":"ok"}
+{"l":"info","ts":"2024-07-28T22:56:01+08:00","c":"log/log.go:32","msg":"demo1:","app":"start ok","major version":2}
+{"l":"info","ts":"2024-07-28T22:56:01+08:00","c":"log/log.go:32","msg":"call foo","url":"https://tonybai.com","attempt":3}
+{"l":"warn","ts":"2024-07-28T22:56:01+08:00","c":"log/log.go:36","msg":"test warn","tester":"mjw"}
+{"l":"error","ts":"2024-07-28T22:56:01+08:00","c":"log/log.go:40","msg":"test error level","tester":"mjw"}
+{"l":"debug","ts":"2024-07-28T22:56:01+08:00","c":"log/log.go:28","msg":"test modify log level","modify":"ok"}

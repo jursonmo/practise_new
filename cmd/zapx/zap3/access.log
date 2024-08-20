@@ -1,0 +1,2 @@
+{"level":"info","ts":"2024-07-28T23:26:08.163+0800","caller":"zap3/main.go:44","msg":"demo3:","app":"start ok","major version":3}
+{"level":"info","ts":"2024-07-28T23:26:08.164+0800","caller":"zap3/main.go:44","msg":"demo3:","app":"start ok","major version":3}
