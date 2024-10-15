@@ -45,7 +45,7 @@ func main() {
 
 	//start the client
 	client.Start()
-
+	fmt.Println("client started")
 	//Prevent the process from exiting, waiting for an interrupt signal
 	select {}
 }
