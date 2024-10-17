@@ -24,8 +24,13 @@ func main() {
 
 	//WorkerPoolSize = 0的意思是不开启工作池，默认是开启的。不开启后,每次接受都数据，都起goroutine去处理，PingRouter.Handle()将会并发执行
 	//zconf.GlobalObject.WorkerPoolSize = 0
-	s := znet.NewServer()
+	zsconf := *zconf.GlobalObject
+	zsconf.Host = "0.0.0.0"
+	zsconf.TCPPort = 8999
+	zsconf.LogIsolationLevel = zlog.LogInfo
+	zsconf.HeartbeatMax = 10
 
+	s := znet.NewUserConfServer(&zsconf)
 	//2 configure routing
 	s.AddRouter(1, &PingRouter{})
 
