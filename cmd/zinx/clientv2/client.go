@@ -1,8 +1,10 @@
 package clientv2
 
+//clientx是对Zinx客户端进行封装了,实现异步连接和同步连接的功能以及自动重连功能。
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/aceld/zinx/ziface"
@@ -18,6 +20,7 @@ type Client struct {
 	cancel         context.CancelFunc
 	disconnectCh   chan struct{}
 	connectOkCh    chan struct{}
+	connected      atomic.Bool
 	reconnectIntvl time.Duration
 }
 
@@ -55,6 +58,7 @@ func (c *Client) SetOnConnStart(handler func(conn ziface.IConnection)) {
 // onConnStart 内部方法，在连接成功时通知
 // onConnStart internal method, notifies when connection is successful
 func (c *Client) onConnStart(conn ziface.IConnection) {
+	c.connected.Store(true)
 	select {
 	case c.connectOkCh <- struct{}{}:
 	default:
@@ -81,6 +85,7 @@ func (c *Client) SetOnConnStop(handler func(conn ziface.IConnection)) {
 // onConnStop 内部方法，在连接断开时通知
 // onConnStop internal method, notifies when connection is terminated
 func (c *Client) onConnStop(conn ziface.IConnection) {
+	c.connected.Store(false)
 	select {
 	case c.disconnectCh <- struct{}{}:
 	default:
@@ -93,6 +98,10 @@ func (c *Client) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+}
+
+func (c *Client) IsConnected() bool {
+	return c.connected.Load()
 }
 
 // StartWithContext 使用给定的上下文启动客户端，并管理重连逻辑
