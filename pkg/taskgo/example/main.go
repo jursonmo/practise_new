@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/jursonmo/practise/pkg/taskgo"
+	"github.com/jursonmo/practise_new/pkg/taskgo"
 )
 
 func main() {
