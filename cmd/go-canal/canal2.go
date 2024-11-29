@@ -1,5 +1,6 @@
 package main
 
+//利用基于canal的go库来监听binlog日志
 //https://github.com/marcus-ma/myBlog/issues/11
 import (
 	"fmt"
