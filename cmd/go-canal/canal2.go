@@ -4,11 +4,28 @@ package main
 //https://github.com/marcus-ma/myBlog/issues/11
 import (
 	"fmt"
+	"reflect"
+	"time"
 
 	"github.com/go-mysql-org/go-mysql/canal"
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
+
+	"github.com/mitchellh/mapstructure"
 )
+
+type Clients struct {
+	Id        int64     `json:"id"`
+	CreateAt  time.Time `json:"create_at"`
+	UpdateAt  time.Time `json:"update_at"`
+	IsDelete  uint64    `json:"is_delete"`
+	Version   int64     `json:"version"`
+	Ecid      string    `json:"ecid"`
+	Customer  string    `json:"customer"`
+	TopicType string    `json:"topicType"`
+	Nels      string    `json:"nels"`
+	Networks  string    `json:"networks"`
+}
 
 type MyEventHandler struct {
 	canal.DummyEventHandler
@@ -22,12 +39,66 @@ func (h *MyEventHandler) OnRow(ev *canal.RowsEvent) error {
 	record := fmt.Sprintf("%v %v %s %v\n", ev.Table.Schema, ev.Table.Name, ev.Action, ev.Rows)
 	fmt.Println(record)
 
+	m := make(map[string]interface{})
 	//此处是参考 https://github.com/gitstliu/MysqlToAll 里面的获取字段和值的方法
 	for columnIndex, currColumn := range ev.Table.Columns {
 		//字段名，字段的索引顺序，字段对应的值
 		row := fmt.Sprintf("%v %v %v\n", currColumn.Name, columnIndex, ev.Rows[len(ev.Rows)-1][columnIndex])
 		fmt.Println("row info:", row)
+		m[currColumn.Name] = ev.Rows[len(ev.Rows)-1][columnIndex]
 	}
+	fmt.Printf("m:%+v\n", m)
+	fmt.Println("m.create_at type:", reflect.TypeOf(m["create_at"]))
+
+	//mapstructure.Decode 方法将map转换为结构体
+	var clients Clients
+	err := mapstructure.Decode(m, &clients)
+	if err != nil {
+		fmt.Println("err:", err)
+	}
+	fmt.Printf("clients:%+v\n", clients)
+
+	var md mapstructure.Metadata
+	clients = Clients{} // 重新初始化
+	cfg := &mapstructure.DecoderConfig{
+		Metadata: &md,
+		Result:   &clients,
+		TagName:  "json",
+	}
+	decoder, _ := mapstructure.NewDecoder(cfg)
+	err = decoder.Decode(m)
+	if err != nil {
+		fmt.Println("err:", err)
+	}
+	fmt.Printf("md:%+v\n", md)
+	fmt.Printf("2222 clients:%+v\n", clients) // 无法将时间类型的字段转换为time.Time类型 CreateAt:0001-01-01 00:00:00
+
+	// 发现一个问题，无法将时间类型的字段转换为time.Time类型，所以需要自己写一个方法来转换
+	// 自定义 DecodeHook
+	hook := mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeHookFunc("2006-01-02 15:04:05"), // 时间格式
+	)
+
+	clients = Clients{}          // 重新初始化
+	md = mapstructure.Metadata{} // 重新初始化
+	// 使用自定义解码器
+	decoderConfig := &mapstructure.DecoderConfig{
+		Metadata:   &md,
+		DecodeHook: hook,
+		Result:     &clients,
+		TagName:    "json", // 必须指定标签名，否则无法将create_at 反序列成 CreateAt字段,  UdpateAt DeleteAt 也一样。
+	}
+
+	decoder, err = mapstructure.NewDecoder(decoderConfig)
+	if err != nil {
+		panic(err)
+	}
+	err = decoder.Decode(m)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("自定义解码器 md:%+v\n", md)
+	fmt.Printf("自定义解码器 clients:%+v\n\n", clients)
 	return nil
 }
 
@@ -102,3 +173,49 @@ func main() {
 	// startPos := mysql.Position{Name: "mysql-bin.000004", Pos: 1027}
 	// c.RunFrom(startPos)
 }
+
+/* 下面都是OnRow函数打印的：
+
+nelbroker clients insert [[2 2024-11-29 15:55:28 2024-11-29 15:55:28 0 0 mock-clientID-02 mock-topic mock-topic-type 2.1.1 2.1.1.1/32]]
+
+row info: id 0 2
+
+row info: create_at 1 2024-11-29 15:55:28
+
+row info: update_at 2 2024-11-29 15:55:28
+
+row info: is_delete 3 0
+
+row info: version 4 0
+
+row info: ecid 5 mock-clientID-02
+
+row info: customer 6 mock-topic
+
+row info: topicType 7 mock-topic-type
+
+row info: nels 8 2.1.1
+
+row info: networks 9 2.1.1.1/32
+
+m:map[create_at:2024-11-29 15:55:28 customer:mock-topic ecid:mock-clientID-02 id:2 is_delete:0 nels:2.1.1 networks:2.1.1.1/32 topicType:mock-topic-type update_at:2024-11-29 15:55:28 version:0]
+m.create_at type: string
+clients:{Id:2 CreateAt:0001-01-01 00:00:00 +0000 UTC UpdateAt:0001-01-01 00:00:00 +0000 UTC IsDelete:0 Version:0 Ecid:mock-clientID-02 Customer:mock-topic TopicType:mock-topic-type Nels:2.1.1 Networks:2.1.1.1/32}
+err: 2 error(s) decoding:
+
+* 'create_at' expected a map, got 'string'
+* 'update_at' expected a map, got 'string'
+md:{Keys:[id create_at update_at is_delete version ecid customer topicType nels networks] Unused:[] Unset:[]}
+2222 clients:{Id:2 CreateAt:0001-01-01 00:00:00 +0000 UTC UpdateAt:0001-01-01 00:00:00 +0000 UTC IsDelete:0 Version:0 Ecid:mock-clientID-02 Customer:mock-topic TopicType:mock-topic-type Nels:2.1.1 Networks:2.1.1.1/32}
+自定义解码器 md:{Keys:[id create_at update_at is_delete version ecid customer topicType nels networks] Unused:[] Unset:[]}
+自定义解码器 clients:{Id:2 CreateAt:2024-11-29 15:55:28 +0000 UTC UpdateAt:2024-11-29 15:55:28 +0000 UTC IsDelete:0 Version:0 Ecid:mock-clientID-02 Customer:mock-topic TopicType:mock-topic-type Nels:2.1.1 Networks:2.1.1.1/32}
+
+OnPosSynced binlog.000170 6782
+
+[2024/12/04 14:39:10] [info] dump.go:187 dump MySQL and parse OK, use 0.13 seconds, start binlog replication at (binlog.000170, 6782)
+[2024/12/04 14:39:10] [info] binlogsyncer.go:442 begin to sync binlog from position (binlog.000170, 6782)
+[2024/12/04 14:39:10] [info] binlogsyncer.go:408 Connected to mysql 9.0.1 server
+[2024/12/04 14:39:10] [info] sync.go:22 start sync binlog at binlog file (binlog.000170, 6782)
+[2024/12/04 14:39:10] [info] binlogsyncer.go:869 rotate to (binlog.000170, 6782)
+[2024/12/04 14:39:10] [info] sync.go:59 received fake rotate event, next log name is binlog.000170
+*/
