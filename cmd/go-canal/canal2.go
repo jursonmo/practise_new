@@ -110,9 +110,10 @@ func (h *MyEventHandler) OnTableChanged(_ *replication.EventHeader, schema strin
 	return nil
 }
 
-// 监听binlog日志的变化文件与记录的位置
+// 监听binlog日志的变化文件与记录的位置，从库同步完后binlog的记录offset后，会触发该方法。
+// 可以是mysql 通过命令行  show master status 查看。
 func (h *MyEventHandler) OnPosSynced(_ *replication.EventHeader, pos mysql.Position, set mysql.GTIDSet, force bool) error {
-	//源码：当force为true，立即同步位置
+	//源码：当force为true，立即同步位置.
 	record := fmt.Sprintf("%v %v \n", pos.Name, pos.Pos)
 	fmt.Println("OnPosSynced", record) //OnPosSynced binlog.000170 848
 	return nil
