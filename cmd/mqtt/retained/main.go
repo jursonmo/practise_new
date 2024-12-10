@@ -66,7 +66,7 @@ func main() {
 	// /etc/mosquitto/mosquitto.conf:
 	//allow_anonymous true
 	//password_file /etc/mosquitto/pwdfile
-	//表示允许匿名连接和使用密码文件里用户和密码可以登录，如果使用用户名密码方式验证，则用户名和密码必须正确。
+	//表示允许匿名连接和使用密码文件里用户和密码可以登录，如果client opts.SetUsername("user1"), 即使用用户名密码方式验证，则用户名和密码必须正确。
 	opts.SetUsername("user1")
 	opts.SetPassword("user1")
 

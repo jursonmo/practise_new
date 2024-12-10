@@ -55,7 +55,7 @@ sudo vim /etc/mosquitto/mosquitto.conf
 
 4. QoS 级别：保留消息可以与任何 QoS 级别一起使用，但在 QoS 1 或 QoS 2 的情况下，代理会确保这些保留消息的传递和确认。
 
-### 使用用户名密码连接
+### 使用用户名密码连接, -c 意思是删除旧的文件，创建新的passwordfile， 可以认为是覆盖。
 1. mosquitto_passwd -c /path/to/passwordfile username1
 在提示下输入 username1 的密码。
 
@@ -65,6 +65,11 @@ mosquitto_passwd /path/to/passwordfile username2
 
 3. 启用用户名和密码: 在配置文件/etc/mosquitto/mosquitto.conf中添加:
 password_file /path/to/passwordfile
+
+4. 如果在 /etc/mosquitto/mosquitto.conf 配置文件里添加了如下配置:
+	allow_anonymous true
+	password_file /etc/mosquitto/passwordfile
+	表示允许匿名连接和使用密码文件里用户和密码可以登录，如果client opts.SetUsername("user1"), 即使用用户名密码方式验证，则用户名和密码必须正确。
 
 #### tls 证书生成
 # 创建 CA 证书
