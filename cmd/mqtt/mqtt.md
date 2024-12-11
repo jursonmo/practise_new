@@ -22,6 +22,7 @@ sudo /etc/init.d/mosquitto restart/stop/start
 
 #### 修改配置文件
 sudo vim /etc/mosquitto/mosquitto.conf
+listener 1883 0.0.0.0 #让mosquitto监听0.0.0.0:1883端口
 
 ### MQTT 协议中的 message ID
 #### 在 MQTT 协议中，message ID 的特性在不同的 QoS 级别中有所不同。在 QoS 级别 1 时，message ID 具有以下特性：
