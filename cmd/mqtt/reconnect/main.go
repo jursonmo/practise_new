@@ -27,8 +27,10 @@ func main() {
 
 	// 设置连接成功的回调
 	opts.OnConnect = func(c mqtt.Client) {
-		fmt.Println("Connected to broker")
-		if token := c.Subscribe("test", 0, func(c mqtt.Client, m mqtt.Message) {}); token.Wait() && token.Error() != nil {
+		fmt.Println("OnConnect Called")
+		if token := c.Subscribe("test", 0, func(c mqtt.Client, m mqtt.Message) {
+			fmt.Printf("Received message: %s from topic: %s\n", m.Payload(), m.Topic())
+		}); token.Wait() && token.Error() != nil {
 			fmt.Printf("Subscribe error: %v\n", token.Error())
 			panic("subscribe error")
 		}
@@ -57,6 +59,13 @@ func main() {
 		return
 	}
 
+	fmt.Println("Connected to broker ok") // 这里连接成功，可能比OnConnect回调要快，所以休眠一秒，等待OnConnect回调执行完订阅操作。
+	time.Sleep(1 * time.Second)
+
+	// 发送消息，自己能否收到消息。可以收到的。
+	token := client.Publish("test", 0, false, "Hello, MQTT!")
+	token.Wait()
+	fmt.Println("Published message err:", token.Error())
 	// 其他逻辑，比如订阅、发布消息等...
 
 	// systemctl stop mosquitto, 查看是否断开连接，是否尝试重连
