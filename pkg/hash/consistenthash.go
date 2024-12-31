@@ -168,6 +168,16 @@ func (h *ConsistentHash) addNode(nodeRepr string) {
 	h.nodes[nodeRepr] = lang.Placeholder
 }
 
+func (h *ConsistentHash) Nodes() []string {
+	h.lock.RLock()
+	defer h.lock.RUnlock()
+	var nodes []string
+	for k := range h.nodes {
+		nodes = append(nodes, k)
+	}
+	return nodes
+}
+
 func (h *ConsistentHash) containsNode(nodeRepr string) bool {
 	_, ok := h.nodes[nodeRepr]
 	return ok
