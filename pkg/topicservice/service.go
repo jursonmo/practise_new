@@ -83,6 +83,13 @@ func init() {
 		TopicBalance: make(map[string]*ServiceBalanceResult),
 	}
 }
+func NewBalance(balancer ServiceBalancer) *Balance {
+	return &Balance{
+		DefaultBalancer: balancer,
+		Services:        []ServiceInfo{},
+		TopicBalance:    make(map[string]*ServiceBalanceResult),
+	}
+}
 
 // 当服务列表发生变化，需要重新就算并更新已经存在缓存中的负载结果
 func (b *Balance) UpdateServices(services []ServiceInfo) {
@@ -198,8 +205,13 @@ func NewService(sc *ServiceConfig) (*Service, error) {
 	sc.Etcd.Key = fmt.Sprintf("/%s/%s/%s", sc.Ns, sc.As, sc.Etcd.Key)
 
 	return &Service{
-		sc:      sc,
-		balance: DefaultBalance, //默认使用一致性hash算法
+		sc: sc,
+		//balance: DefaultBalance, //应该每个服务创建一个Balance
+		balance: NewBalance(&myConsistentHash{
+			chash: hash.NewConsistentHash(),
+			name:  "consistent_hash",
+			desc:  "consistent hash balance alg",
+		}), //默认使用一致性hash算法
 		//topicServiceMap: make(map[string]*ServiceConfig),
 	}, nil
 }
