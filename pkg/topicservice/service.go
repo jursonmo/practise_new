@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/jursonmo/practise_new/pkg/hash"
 	"github.com/zeromicro/go-zero/core/discov"
 	"github.com/zeromicro/go-zero/core/logx"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// TODO:
+// 1. 每个服务都订阅topic信息，并保存下来，用于显示
+// 2. 一致性hash, 如果是leader没有变，服务列表变了，计算后，部分topic 有变化，其他服务订阅topics的信息时，会认为所有的都有变化吗
 type BalanceInfo struct {
 	BalanceName string
 	Desc        string
@@ -177,8 +182,11 @@ type Service struct {
 	isLeader  bool //是否是leader, 只有leader才会分配topic和service(broker)的对应关系
 	pubClient *discov.Publisher
 
-	balance *Balance
-	topics  []string
+	balance     *Balance
+	serviceList []ServiceInfo
+	topics      []string
+	etcdClient  *clientv3.Client
+
 	//topic和service的对应关系
 	// topicServiceMap map[string]*ServiceConfig
 }
@@ -263,9 +271,19 @@ func (s *Service) GetServiceConfig() *ServiceConfig {
 	return s.sc
 }
 
+// 1. 服务列表有变化：
+//    1.1 如果是leader, 就重新计算 topic-->services，并更新到etcd
+//	  1.2 如果是follower, 只需要关闭 s.etcdClient.Close()
+// 2. 服务列表没有变化: 即原来是leader的还是leader, 是follower还是follower， 所以啥都不需要做。
+
 func (s *Service) StartDiscov() error {
 	DiscovCustomService(s.sc.Etcd, func(list []ServiceConfig) error {
 		logx.Debugf("get Custom %s service:%+v", s.sc.Etcd.Key, list)
+		if reflect.DeepEqual(s.serviceList, list) {
+			//服务列表没有变化: 即原来是leader的还是leader, 是follower还是follower， 所以啥都不需要做。
+			logx.Info("serviceList no change")
+			return nil
+		}
 		leader := findLeader(list)
 		if leader == nil {
 			return errors.New("leader == nil")
@@ -284,17 +302,38 @@ func (s *Service) StartDiscov() error {
 			s.balance.UpdateServices(list)
 			//重新分配topic和service的对应关系
 			logx.Info("-----------------------------------")
+			topicService := make(map[string]string)
 			for _, topic := range s.topics {
 				services := s.balance.GetServiceByTopic(topic)
 				logx.Infof("assign topic:%s, services:%+v", topic, services)
+				topicService[topic] = JoinString(services)
 			}
 			logx.Info("-----------------------------------")
+			//如果两个service 都在keepalive 会发生什么
+			err := s.setTopicToEtcd(topicService)
+			if err != nil {
+				logx.Error(err)
+			}
 		} else {
 			logx.Infof("I am not the leader, leader is %+v", leader)
+			// 如果不是leader ,
+			if s.etcdClient != nil {
+				logx.Errorf("close %s etcdClient", s.sc.String())
+				s.etcdClient.Close()
+				s.etcdClient = nil
+			}
 		}
 		return nil
 	})
 	return nil
+}
+
+func JoinString(ss []ServiceInfo) string {
+	joins := ""
+	for _, s := range ss {
+		joins += s.String()
+	}
+	return joins
 }
 
 func (s *Service) PublishLeader() {
@@ -371,4 +410,64 @@ func DiscovCustomService(c discov.EtcdConf, handle func([]ServiceConfig) error) 
 	sub.AddListener(update)
 	update()
 	return nil
+}
+
+func (s *Service) setTopicToEtcd(topicService map[string]string) error {
+	if s.etcdClient != nil {
+		s.etcdClient.Close()
+		s.etcdClient = nil
+	}
+	// 创建etcd客户端
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   s.sc.Etcd.Hosts, // etcd 服务地址
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		return err
+	}
+	s.etcdClient = cli
+
+	// 定义 TTL 时间（例如 10 秒）
+	ttl := int64(10)
+
+	// 创建一个租约
+	lease, err := cli.Grant(context.Background(), ttl)
+	if err != nil {
+		return err
+	}
+
+	// 构建事务操作
+	txn := cli.Txn(context.Background())
+	ops := []clientv3.Op{}
+	for topic, service := range topicService {
+		ops = append(ops, clientv3.OpPut(topic, service, clientv3.WithLease(lease.ID)))
+	}
+	txn = txn.Then(ops...)
+	// 提交事务
+	txnResp, err := txn.Commit()
+	if err != nil {
+		return err
+	}
+
+	// 检查事务执行结果
+	if txnResp.Succeeded {
+		logx.Info("All keys written successfully with TTL")
+		// 保持租约（可选，如果需要长期续约）
+		ch, kaErr := cli.KeepAlive(context.Background(), lease.ID)
+		if kaErr != nil {
+			logx.Errorf("KeepAlive error: %v\n", kaErr)
+			return err
+		}
+
+		// 打印 KeepAlive 响应
+		go func() {
+			for ka := range ch {
+				logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
+			}
+			logx.Errorf("service %s keepalive quit", s.sc.String())
+		}()
+		return nil
+	} else {
+		return errors.New("Transaction failed")
+	}
 }
