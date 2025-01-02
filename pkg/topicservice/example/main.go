@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	topicservice "github.com/jursonmo/practise_new/pkg/topicservice"
 	"github.com/zeromicro/go-zero/core/discov"
@@ -45,6 +46,7 @@ func main() {
 
 	logx.Info("start service1")
 	service1.Start(context.Background())
+	time.Sleep(time.Second)
 	logx.Info("start service2")
 	service2.Start(context.Background())
 	select {}
