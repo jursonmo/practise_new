@@ -36,8 +36,18 @@ func (h *myConsistentHash) Desc() string {
 func (h *myConsistentHash) Init(services []ServiceInfo) {
 	//h.chash.Add node 时, 如果node已经存在,先删除再添加。
 	logx.Infof("before init nodes:%v", h.chash.Nodes())
+	oldNodes := make(map[string]struct{})
+	for _, node := range h.chash.Nodes() {
+		oldNodes[node] = struct{}{}
+	}
 	for _, v := range services {
-		h.chash.Add(v) //v 是ServiceInfo类型， 实现了String()方法，所以可以直接添加
+		h.chash.Add(v)               //v 是ServiceInfo类型， 实现了String()方法，所以可以直接添加
+		delete(oldNodes, v.String()) //把新的node 从oldNodes中删除，剩下的就是需要删除的node
+	}
+	//删除完后，剩下的就是需要添加的node
+	logx.Infof("need to del oldNodes:%v", oldNodes)
+	for node := range oldNodes {
+		h.chash.Remove(node)
 	}
 	logx.Infof("after init nodes:%v", h.chash.Nodes())
 }
