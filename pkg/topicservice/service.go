@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,12 +90,18 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.Register(); err != nil {
 		return err
 	}
-	//订阅etcd
-	if err := s.StartDiscov(); err != nil {
+
+	//订阅services
+	logx.Info("-----start discov service-------")
+	if err := s.StartDiscovService(); err != nil {
 		return err
 	}
-	//监听etcd的事件
-	//TODO: 监听etcd的事件，当leader发生变化时，重新分配topic和service的对应关系
+
+	//监听etcd的事件topic和service的对应关系
+	logx.Info("-----start discov topics-------")
+	if err := s.StartDiscovTopics(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -133,8 +140,8 @@ func (s *Service) GetServiceConfig() *ServiceConfig {
 //	  1.2 如果是follower, 只需要关闭 s.etcdClient.Close()
 // 2. 服务列表没有变化: 即原来是leader的还是leader, 是follower还是follower， 所以啥都不需要做。
 
-func (s *Service) StartDiscov() error {
-	DiscovCustomService(s.sc.Etcd, func(list []ServiceConfig) error {
+func (s *Service) StartDiscovService() error {
+	DiscovCustomService(s.sc.Etcd.Hosts, s.sc.Etcd.Key, func(list []ServiceConfig) error {
 		logx.Debugf("get Custom %s service:%+v", s.sc.Etcd.Key, list)
 		if reflect.DeepEqual(s.serviceList, list) {
 			//服务列表没有变化: 即原来是leader的还是leader, 是follower还是follower， 所以啥都不需要做。
@@ -163,7 +170,7 @@ func (s *Service) StartDiscov() error {
 			for _, topic := range s.topics {
 				services := s.balance.GetServiceByTopic(topic)
 				logx.Infof("assign topic:%s, services:%+v", topic, services)
-				topicService[topic] = JoinString(services)
+				topicService[topic] = topicData(topic, services)
 			}
 			logx.Info("-----------------------------------")
 			//如果两个service 都在keepalive 会发生什么
@@ -185,12 +192,24 @@ func (s *Service) StartDiscov() error {
 	return nil
 }
 
-func JoinString(ss []ServiceInfo) string {
-	joins := ""
+// topic:s1,s2
+func topicData(topic string, ss []ServiceInfo) string {
+	var ts []string
 	for _, s := range ss {
-		joins += s.String()
+		ts = append(ts, s.String())
 	}
-	return joins
+
+	return topic + ":" + strings.Join(ts, ",")
+}
+
+func parseTopicData(d string) (topic string, ss string, err error) {
+	idx := strings.Index(d, ":")
+	if idx == -1 {
+		return "", "", fmt.Errorf("invalid topic data:%s", d)
+	}
+	topic = d[:idx]
+	ss = d[idx+1:]
+	return topic, ss, nil
 }
 
 func (s *Service) PublishLeader() {
@@ -241,16 +260,45 @@ func findLeader(list []ServiceConfig) *ServiceConfig {
 	return &leader
 }
 
-func DiscovCustomService(c discov.EtcdConf, handle func([]ServiceConfig) error) error {
-	sub, err := discov.NewSubscriber(c.Hosts, c.Key)
+func (s *Service) StartDiscovTopics() error {
+	return DiscovTopics(s.sc.Etcd.Hosts, s.TopicsPath(), func(topicMetadata map[string]string) {
+		logx.Infof("%s, get topicMetadata:%+v", s.sc.String(), topicMetadata)
+	})
+}
+
+// topic map handler, topic map: topic-->services
+func DiscovTopics(hosts []string, key string, handle func(map[string]string)) error {
+	update := func(sub *discov.Subscriber) {
+		vals := sub.Values()
+		logx.Debugf("get key:%s, value:%+v", key, vals)
+		topicMetadata := make(map[string]string, len(vals))
+		for _, v := range vals {
+			topic, services, err := parseTopicData(v)
+			if err != nil {
+				logx.Error(err)
+				continue
+			}
+			topicMetadata[topic] = services
+		}
+		handle(topicMetadata)
+	}
+	return DiscovAny(hosts, key, update)
+}
+
+func DiscovAny(hosts []string, key string, update func(sub *discov.Subscriber)) error {
+	sub, err := discov.NewSubscriber(hosts, key)
 	if err != nil {
 		return err
 	}
+	sub.AddListener(func() { update(sub) })
+	update(sub)
+	return nil
+}
 
-	update := func() {
-		logx.Infof("watch Custom service of %s update", c.Key)
+func DiscovCustomService(hosts []string, key string, handle func([]ServiceConfig) error) error {
+	update := func(sub *discov.Subscriber) {
 		vals := sub.Values()
-		logx.Debugf("get Custom service:%+v", vals)
+		logx.Debugf("get key:%s, value:%+v", key, vals)
 		serviceList := []ServiceConfig{}
 		for _, v := range vals {
 			bs := ServiceConfig{}
@@ -264,9 +312,15 @@ func DiscovCustomService(c discov.EtcdConf, handle func([]ServiceConfig) error) 
 		logx.Debug("serviceList:", serviceList)
 		handle(serviceList)
 	}
-	sub.AddListener(update)
-	update()
-	return nil
+	return DiscovAny(hosts, key, update)
+}
+
+func (s *Service) TopicsPath() string {
+	return fmt.Sprintf("/%s/%s/topics", s.sc.Ns, s.sc.As)
+}
+
+func (s *Service) TopicKey(topic string) string {
+	return fmt.Sprintf("%s/%s", s.TopicsPath(), topic)
 }
 
 func (s *Service) setTopicToEtcd(topicService map[string]string) error {
@@ -297,7 +351,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 	txn := cli.Txn(context.Background())
 	ops := []clientv3.Op{}
 	for topic, service := range topicService {
-		ops = append(ops, clientv3.OpPut(topic, service, clientv3.WithLease(lease.ID)))
+		ops = append(ops, clientv3.OpPut(s.TopicKey(topic), service, clientv3.WithLease(lease.ID)))
 	}
 	txn = txn.Then(ops...)
 	// 提交事务
