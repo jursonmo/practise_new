@@ -36,6 +36,8 @@ type ServiceConfig struct {
 
 type Service struct {
 	sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
 	sc        *ServiceConfig
 	isLeader  bool //是否是leader, 只有leader才会分配topic和service(broker)的对应关系
 	pubClient *discov.Publisher
@@ -44,7 +46,7 @@ type Service struct {
 	serviceList []ServiceInfo
 	topics      []string
 	etcdClient  *clientv3.Client
-
+	topicPerKey bool
 	//topic和service的对应关系
 	// topicServiceMap map[string]*ServiceConfig
 }
@@ -86,6 +88,7 @@ func (s *Service) SetDefaultBalancer(balance ServiceBalancer) {
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	s.ctx, s.cancel = context.WithCancel(ctx)
 	//注册到etcd
 	if err := s.Register(); err != nil {
 		return err
@@ -199,7 +202,7 @@ func topicData(topic string, ss []ServiceInfo) string {
 		ts = append(ts, s.String())
 	}
 
-	return topic + ":" + strings.Join(ts, ",")
+	return topic + ":" + strings.Join(ts, "|")
 }
 
 func parseTopicData(d string) (topic string, ss string, err error) {
@@ -261,26 +264,44 @@ func findLeader(list []ServiceConfig) *ServiceConfig {
 }
 
 func (s *Service) StartDiscovTopics() error {
-	return DiscovTopics(s.sc.Etcd.Hosts, s.TopicsPath(), func(topicMetadata map[string]string) {
-		logx.Infof("%s, get topicMetadata:%+v", s.sc.String(), topicMetadata)
+	return DiscovTopics(s.sc.Etcd.Hosts, s.TopicsPath(), func(vals []string) {
+		topicMetadata := make(map[string]string, len(vals))
+		if s.topicPerKey {
+			for _, v := range vals {
+				topic, services, err := parseTopicData(v)
+				if err != nil {
+					logx.Error(err)
+					continue
+				}
+				topicMetadata[topic] = services
+			}
+		} else {
+			if len(vals) == 0 {
+				logx.Errorf("no topic found")
+				return
+			}
+			//values 是所有 topics信息, len(values) = 1, value:[topic6:topic_service-1;topic1:topic_service-1|topic_service-2]
+			ts := strings.Split(vals[0], ";")
+			for _, v := range ts {
+				topic, services, err := parseTopicData(v) // v 格式 topic6:topic_service-1
+				if err != nil {
+					logx.Error(err)
+					continue
+				}
+				topicMetadata[topic] = services
+			}
+		}
+		logx.Infof("%s, get len:%d topicMetadata:%+v", s.sc.String(), len(topicMetadata), topicMetadata)
 	})
 }
 
 // topic map handler, topic map: topic-->services
-func DiscovTopics(hosts []string, key string, handle func(map[string]string)) error {
+func DiscovTopics(hosts []string, key string, handle func([]string)) error {
 	update := func(sub *discov.Subscriber) {
 		vals := sub.Values()
-		logx.Debugf("get key:%s, value:%+v", key, vals)
-		topicMetadata := make(map[string]string, len(vals))
-		for _, v := range vals {
-			topic, services, err := parseTopicData(v)
-			if err != nil {
-				logx.Error(err)
-				continue
-			}
-			topicMetadata[topic] = services
-		}
-		handle(topicMetadata)
+		logx.Debugf("get key:%s, len:%d, value:%+v", key, len(vals), vals)
+
+		handle(vals)
 	}
 	return DiscovAny(hosts, key, update)
 }
@@ -347,29 +368,65 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 		return err
 	}
 
-	// 构建事务操作
-	txn := cli.Txn(context.Background())
-	ops := []clientv3.Op{}
-	for topic, service := range topicService {
-		ops = append(ops, clientv3.OpPut(s.TopicKey(topic), service, clientv3.WithLease(lease.ID)))
-	}
-	txn = txn.Then(ops...)
-	// 提交事务
-	txnResp, err := txn.Commit()
-	if err != nil {
-		return err
-	}
+	if s.topicPerKey {
+		// 这种方式是，每个topic对应一个key, 坏处是，设置一次，watch方会watch 很多次变更。
+		// 并且发现bug,watch变更的最终结果跟etcd上的不一致(TODO)。
+		// 构建事务操作
+		txn := cli.Txn(context.Background())
+		ops := []clientv3.Op{}
+		for topic, service := range topicService {
+			ops = append(ops, clientv3.OpPut(s.TopicKey(topic), service, clientv3.WithLease(lease.ID)))
+		}
+		txn = txn.Then(ops...)
+		// 提交事务
+		txnResp, err := txn.Commit()
+		if err != nil {
+			return err
+		}
 
-	// 检查事务执行结果
-	if txnResp.Succeeded {
-		logx.Info("All keys written successfully with TTL")
+		// 检查事务执行结果
+		if txnResp.Succeeded {
+			logx.Info("All keys written successfully with TTL")
+			// 保持租约（可选，如果需要长期续约）
+			ch, kaErr := cli.KeepAlive(context.Background(), lease.ID)
+			if kaErr != nil {
+				logx.Errorf("KeepAlive error: %v\n", kaErr)
+				return err
+			}
+
+			// 打印 KeepAlive 响应, 正常情况下，ttl/3 秒会收到一次心跳.
+			go func() {
+				for ka := range ch {
+					logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
+				}
+				logx.Errorf("service %s keepalive quit", s.sc.String())
+			}()
+			return nil
+		} else {
+			return errors.New("transaction failed")
+		}
+	} else {
+		//这种方式是，所有topic对应一个key
+		vals := make([]string, 0, len(topicService))
+		for _, v := range topicService {
+			vals = append(vals, v)
+		}
+
+		// 写入键值对到 etcd
+		// key := s.TopicPath() //设置 /ns/as/topics , go-zero watch 不到数据， 所以设置 /ns/as/topics/all
+		key := s.TopicKey("all") //设置成 /ns/as/topics/all，go-zero watch 到数据
+		value := strings.Join(vals, ";")
+		_, err = cli.Put(s.ctx, key, value, clientv3.WithLease(lease.ID))
+		if err != nil {
+			return err
+		}
+		logx.Infof("set etcd key:%s, value:%s, written successfully with TTL", key, value)
 		// 保持租约（可选，如果需要长期续约）
-		ch, kaErr := cli.KeepAlive(context.Background(), lease.ID)
+		ch, kaErr := cli.KeepAlive(s.ctx, lease.ID)
 		if kaErr != nil {
 			logx.Errorf("KeepAlive error: %v\n", kaErr)
 			return err
 		}
-
 		// 打印 KeepAlive 响应, 正常情况下，ttl/3 秒会收到一次心跳.
 		go func() {
 			for ka := range ch {
@@ -377,8 +434,6 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 			}
 			logx.Errorf("service %s keepalive quit", s.sc.String())
 		}()
-		return nil
-	} else {
-		return errors.New("Transaction failed")
 	}
+	return nil
 }
