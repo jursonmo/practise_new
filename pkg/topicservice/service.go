@@ -339,7 +339,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 	s.etcdClient = cli
 
 	// 定义 TTL 时间（例如 10 秒）
-	ttl := int64(10)
+	ttl := int64(20) // keepalive 会在这个时间1/3内发送心跳
 
 	// 创建一个租约
 	lease, err := cli.Grant(context.Background(), ttl)
@@ -370,7 +370,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 			return err
 		}
 
-		// 打印 KeepAlive 响应
+		// 打印 KeepAlive 响应, 正常情况下，ttl/3 秒会收到一次心跳.
 		go func() {
 			for ka := range ch {
 				logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
