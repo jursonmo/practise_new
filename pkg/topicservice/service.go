@@ -34,6 +34,11 @@ type ServiceConfig struct {
 	Metadata  map[string]string `json:",optional"`
 }
 
+const (
+	TopicsSep       = ";" //topic之间的分隔符
+	TopicServiceSeq = "|" //topic负载的多个service之间的分隔符
+)
+
 type Service struct {
 	sync.Mutex
 	ctx       context.Context
@@ -202,7 +207,7 @@ func topicData(topic string, ss []ServiceInfo) string {
 		ts = append(ts, s.String())
 	}
 
-	return topic + ":" + strings.Join(ts, "|")
+	return topic + ":" + strings.Join(ts, TopicServiceSeq)
 }
 
 func parseTopicData(d string) (topic string, ss string, err error) {
@@ -281,7 +286,7 @@ func (s *Service) StartDiscovTopics() error {
 				return
 			}
 			//values 是所有 topics信息, len(values) = 1, value:[topic6:topic_service-1;topic1:topic_service-1|topic_service-2]
-			ts := strings.Split(vals[0], ";")
+			ts := strings.Split(vals[0], TopicsSep)
 			for _, v := range ts {
 				topic, services, err := parseTopicData(v) // v 格式 topic6:topic_service-1
 				if err != nil {
@@ -299,8 +304,8 @@ func (s *Service) StartDiscovTopics() error {
 func DiscovTopics(hosts []string, key string, handle func([]string)) error {
 	update := func(sub *discov.Subscriber) {
 		vals := sub.Values()
+		//get key:/ns/as/topics, len:1, value:[topic4:topic_service-1;topic6:topic_service-1;...]
 		logx.Debugf("get key:%s, len:%d, value:%+v", key, len(vals), vals)
-
 		handle(vals)
 	}
 	return DiscovAny(hosts, key, update)
@@ -415,11 +420,12 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 		// 写入键值对到 etcd
 		// key := s.TopicPath() //设置 /ns/as/topics , go-zero watch 不到数据， 所以设置 /ns/as/topics/all
 		key := s.TopicKey("all") //设置成 /ns/as/topics/all，go-zero watch 到数据
-		value := strings.Join(vals, ";")
+		value := strings.Join(vals, TopicsSep)
 		_, err = cli.Put(s.ctx, key, value, clientv3.WithLease(lease.ID))
 		if err != nil {
 			return err
 		}
+		//set etcd key:/ns/as/topics/all, value:topic6:topic_service-2;topic10:topic_service-1
 		logx.Infof("set etcd key:%s, value:%s, written successfully with TTL", key, value)
 		// 保持租约（可选，如果需要长期续约）
 		ch, kaErr := cli.KeepAlive(s.ctx, lease.ID)
