@@ -51,6 +51,7 @@ type Service struct {
 	serviceList []ServiceInfo
 	topics      []string
 	etcdClient  *clientv3.Client
+	lease       *clientv3.LeaseGrantResponse //租约,用于撤销
 	topicPerKey bool
 	//topic和service的对应关系
 	// topicServiceMap map[string]*ServiceConfig
@@ -285,7 +286,7 @@ func (s *Service) StartDiscovTopics() error {
 				logx.Errorf("no topic found")
 				return
 			}
-			//所有信息都写在一个key:/ns/as/topics 里, 所以values 只有一个值。
+			//所有信息都写在一个key:/ns/as/topics/all 里, 所以values 只有一个值。
 			//以后可以考虑把所有topics信息分散在多个key里，比如/ns/as/topics/node1, /ns/as/topics/node2,这样某个node的负责的topic有变化时，只需要更新这个key即可。
 			//values 是所有 topics信息, len(values) = 1, value:[topic6:topic_service-1;topic1:topic_service-1|topic_service-2]
 			ts := strings.Split(vals[0], TopicsSep)
@@ -299,6 +300,16 @@ func (s *Service) StartDiscovTopics() error {
 			}
 		}
 		logx.Infof("%s, get len:%d topicMetadata:%+v", s.sc.String(), len(topicMetadata), topicMetadata)
+		has_service2 := false
+		for _, service := range topicMetadata {
+			if service == "topic_service-2" {
+				has_service2 = true
+				break
+			}
+		}
+		if !has_service2 {
+			logx.Info("-----------no service2-----------------")
+		}
 	})
 }
 
@@ -352,47 +363,77 @@ func (s *Service) TopicKey(topic string) string {
 }
 
 func (s *Service) setTopicToEtcd(topicService map[string]string) error {
-	if s.etcdClient != nil {
-		s.etcdClient.Close()
-		s.etcdClient = nil
-	}
-	// 创建etcd客户端
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   s.sc.Etcd.Hosts, // etcd 服务地址
-		DialTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		return err
-	}
-	s.etcdClient = cli
+	// if s.etcdClient != nil {
+	// 	s.etcdClient.Close()
+	// 	s.etcdClient = nil
+	// }
 
-	// 定义 TTL 时间（例如 10 秒）
-	ttl := int64(20) // keepalive 会在这个时间1/3内发送心跳
-
-	// 创建一个租约
-	lease, err := cli.Grant(context.Background(), ttl)
-	if err != nil {
-		return err
-	}
-
-	if s.topicPerKey {
-		// 这种方式是，每个topic对应一个key, 坏处是，设置一次，watch方会watch 很多次变更。
-		// 并且发现bug,watch变更的最终结果跟etcd上的不一致(TODO)。
-		// 构建事务操作
-		txn := cli.Txn(context.Background())
-		ops := []clientv3.Op{}
-		for topic, service := range topicService {
-			ops = append(ops, clientv3.OpPut(s.TopicKey(topic), service, clientv3.WithLease(lease.ID)))
-		}
-		txn = txn.Then(ops...)
-		// 提交事务
-		txnResp, err := txn.Commit()
+	var err error
+	if s.etcdClient == nil {
+		// 创建etcd客户端
+		s.etcdClient, err = clientv3.New(clientv3.Config{
+			Endpoints:   s.sc.Etcd.Hosts, // etcd 服务地址
+			DialTimeout: 5 * time.Second,
+		})
 		if err != nil {
 			return err
 		}
 
+	}
+	if s.lease != nil {
+		// 需要撤销之前租约, 相当于关闭keepalive, 同时删除关联的key. 否则会出现watch 相同key的内容的bug。
+		_, err = s.etcdClient.Revoke(context.TODO(), s.lease.ID)
+		if err != nil {
+			panic(err)
+		}
+		time.Sleep(time.Second)
+		logx.Info("=============== revoke lease =================")
+	}
+	// 定义 TTL 时间（例如 10 秒）
+	ttl := int64(20) // keepalive 会在这个时间1/3内发送心跳
+
+	// 创建一个租约
+	s.lease, err = s.etcdClient.Grant(context.Background(), ttl)
+	if err != nil {
+		return err
+	}
+
+	cli := s.etcdClient
+	lease := s.lease
+
+	s.topicPerKey = true
+	if s.topicPerKey {
+		var successed bool
+		// 这种方式是，每个topic对应一个key, 坏处是，设置一次，watch方会watch 很多次变更。
+		// 并且发现bug, 用事务的方式提交或者多次put更新, watch变更的最终结果跟etcd上的不一致(TODO)。
+		// (done: 修复方法是先撤销租约，把所有关联key删除，再设置所有key)
+		txn := true
+		if txn {
+			// 构建事务操作
+			txn := cli.Txn(context.Background())
+			ops := []clientv3.Op{}
+			for topic, service := range topicService {
+				ops = append(ops, clientv3.OpPut(s.TopicKey(topic), service, clientv3.WithLease(lease.ID)))
+			}
+			txn = txn.Then(ops...)
+			// 提交事务
+			txnResp, err := txn.Commit()
+			if err != nil {
+				return err
+			}
+			successed = txnResp.Succeeded
+		} else {
+			for topic, service := range topicService {
+				//time.Sleep(time.Millisecond * 100)
+				_, err = cli.Put(s.ctx, s.TopicKey(topic), service, clientv3.WithLease(lease.ID))
+				if err != nil {
+					return err
+				}
+			}
+			successed = true
+		}
 		// 检查事务执行结果
-		if txnResp.Succeeded {
+		if successed {
 			logx.Info("All keys written successfully with TTL")
 			// 保持租约（可选，如果需要长期续约）
 			ch, kaErr := cli.KeepAlive(context.Background(), lease.ID)
