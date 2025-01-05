@@ -388,8 +388,17 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 			panic(err)
 		}
 		time.Sleep(time.Second)
-		logx.Info("=============== revoke lease =================")
+		logx.Infof("=============== revoke lease:%d =================", s.lease.ID)
 	}
+
+	// 删除以 "/ns/as/topics" 开头的所有键, 避免其他服务残留数据
+	deleteResp, err := s.etcdClient.Delete(context.TODO(), s.TopicsPath(), clientv3.WithPrefix())
+	if err != nil {
+		logx.Error(err)
+		return err
+	}
+	logx.Infof("Deleted %d keys with prefix %s", deleteResp.Deleted, s.TopicsPath())
+
 	// 定义 TTL 时间（例如 10 秒）
 	ttl := int64(20) // keepalive 会在这个时间1/3内发送心跳
 
@@ -445,10 +454,11 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 
 			// 打印 KeepAlive 响应, 正常情况下，ttl/3 秒会收到一次心跳.
 			go func() {
-				for ka := range ch {
+				var ka = &clientv3.LeaseKeepAliveResponse{}
+				for ka = range ch {
 					logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
 				}
-				logx.Errorf("service %s keepalive quit", s.sc.String())
+				logx.Errorf("service %s lease id:%d keepalive quit", s.sc.String(), ka.ID)
 			}()
 			return nil
 		} else {
@@ -479,10 +489,11 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 		}
 		// 打印 KeepAlive 响应, 正常情况下，ttl/3 秒会收到一次心跳.
 		go func() {
-			for ka := range ch {
+			var ka = &clientv3.LeaseKeepAliveResponse{}
+			for ka = range ch {
 				logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
 			}
-			logx.Errorf("service %s keepalive quit", s.sc.String())
+			logx.Errorf("service %s lease id:%d keepalive quit", s.sc.String(), ka.ID)
 		}()
 	}
 	return nil
