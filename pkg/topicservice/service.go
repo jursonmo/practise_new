@@ -285,6 +285,8 @@ func (s *Service) StartDiscovTopics() error {
 				logx.Errorf("no topic found")
 				return
 			}
+			//所有信息都写在一个key:/ns/as/topics 里, 所以values 只有一个值。
+			//以后可以考虑把所有topics信息分散在多个key里，比如/ns/as/topics/node1, /ns/as/topics/node2,这样某个node的负责的topic有变化时，只需要更新这个key即可。
 			//values 是所有 topics信息, len(values) = 1, value:[topic6:topic_service-1;topic1:topic_service-1|topic_service-2]
 			ts := strings.Split(vals[0], TopicsSep)
 			for _, v := range ts {
