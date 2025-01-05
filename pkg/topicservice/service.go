@@ -381,7 +381,8 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 
 	}
 	if s.lease != nil {
-		// 需要撤销之前租约, 相当于关闭keepalive, 同时删除关联的key. 否则会出现watch 相同key的内容的bug。
+		// 需要撤销之前租约, 相当于关闭keepalive, 同时删除关联的key.
+		//否则会出现watch 相同key的内容的bug。即会出现 topic4:topic_service-1;topic4:topic_service-2
 		_, err = s.etcdClient.Revoke(context.TODO(), s.lease.ID)
 		if err != nil {
 			panic(err)
@@ -401,12 +402,12 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 	cli := s.etcdClient
 	lease := s.lease
 
-	s.topicPerKey = true
+	//s.topicPerKey = true // 测试每个topic对应一个key。
 	if s.topicPerKey {
 		var successed bool
 		// 这种方式是，每个topic对应一个key, 坏处是，设置一次，watch方会watch 很多次变更。
 		// 并且发现bug, 用事务的方式提交或者多次put更新, watch变更的最终结果跟etcd上的不一致(TODO)。
-		// (done: 修复方法是先撤销租约，把所有关联key删除，再设置所有key)
+		// (done: 修复bug的方法是先撤销租约，把所有关联key删除，再设置所有key)
 		txn := true
 		if txn {
 			// 构建事务操作
