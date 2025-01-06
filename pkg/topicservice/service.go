@@ -118,6 +118,22 @@ func (s *Service) Stop() error {
 	if s.pubClient != nil {
 		s.pubClient.Stop()
 	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.etcdClient != nil {
+		if s.lease != nil {
+			//撤销租约
+			logx.Infof("revoke %s lease", s.sc.String())
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			_, err := s.etcdClient.Revoke(ctx, s.lease.ID)
+			if err != nil {
+				logx.Error(err)
+			}
+			cancel()
+		}
+		s.etcdClient.Close()
+	}
 	return nil
 }
 func (s *Service) SetTopics(topics []string) {
@@ -383,7 +399,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 	if s.lease != nil {
 		// 需要撤销之前租约, 相当于关闭keepalive, 同时删除关联的key.
 		//否则会出现watch 相同key的内容的bug。即会出现 topic4:topic_service-1;topic4:topic_service-2
-		_, err = s.etcdClient.Revoke(context.TODO(), s.lease.ID)
+		_, err = s.etcdClient.Revoke(s.ctx, s.lease.ID)
 		if err != nil {
 			panic(err)
 		}
@@ -391,8 +407,8 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 		logx.Infof("=============== revoke lease:%d =================", s.lease.ID)
 	}
 
-	// 删除以 "/ns/as/topics" 开头的所有键, 避免其他服务残留数据
-	deleteResp, err := s.etcdClient.Delete(context.TODO(), s.TopicsPath(), clientv3.WithPrefix())
+	// 删除以 "/ns/as/topics" 开头的所有键, 避免其他服务残留数据, 如果不删除，直接更新已经存在的key, disov watch 到的内容也有点问题，同一个key的新旧value都能读到。
+	deleteResp, err := s.etcdClient.Delete(s.ctx, s.TopicsPath(), clientv3.WithPrefix())
 	if err != nil {
 		logx.Error(err)
 		return err
@@ -403,7 +419,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 	ttl := int64(20) // keepalive 会在这个时间1/3内发送心跳
 
 	// 创建一个租约
-	s.lease, err = s.etcdClient.Grant(context.Background(), ttl)
+	s.lease, err = s.etcdClient.Grant(s.ctx, ttl)
 	if err != nil {
 		return err
 	}
@@ -446,7 +462,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 		if successed {
 			logx.Info("All keys written successfully with TTL")
 			// 保持租约（可选，如果需要长期续约）
-			ch, kaErr := cli.KeepAlive(context.Background(), lease.ID)
+			ch, kaErr := cli.KeepAlive(s.ctx, lease.ID)
 			if kaErr != nil {
 				logx.Errorf("KeepAlive error: %v\n", kaErr)
 				return err
