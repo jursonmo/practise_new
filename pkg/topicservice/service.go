@@ -379,11 +379,6 @@ func (s *Service) TopicKey(topic string) string {
 }
 
 func (s *Service) setTopicToEtcd(topicService map[string]string) error {
-	// if s.etcdClient != nil {
-	// 	s.etcdClient.Close()
-	// 	s.etcdClient = nil
-	// }
-
 	var err error
 	if s.etcdClient == nil {
 		// 创建etcd客户端
@@ -449,6 +444,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 			}
 			successed = txnResp.Succeeded
 		} else {
+			// 多次put更新, 出错也不会回滚。可能会部分成功, 部分失败的情况，导致数据不一致，这是不推荐的。
 			for topic, service := range topicService {
 				//time.Sleep(time.Millisecond * 100)
 				_, err = cli.Put(s.ctx, s.TopicKey(topic), service, clientv3.WithLease(lease.ID))
@@ -472,7 +468,7 @@ func (s *Service) setTopicToEtcd(topicService map[string]string) error {
 			go func() {
 				var ka = &clientv3.LeaseKeepAliveResponse{}
 				for ka = range ch {
-					logx.Infof("KeepAlive response: TTL=%d, service:%s\n", ka.TTL, s.sc.String())
+					logx.Infof("KeepAlive response: ID:%d, TTL=%d, service:%s\n", ka.ID, ka.TTL, s.sc.String())
 				}
 				logx.Errorf("service %s lease id:%d keepalive quit", s.sc.String(), ka.ID)
 			}()
