@@ -16,9 +16,18 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// TODO:
-// 1. 每个服务都订阅topic信息，并保存下来，用于显示
-// 2. 一致性hash, 如果是leader没有变，服务列表变了，计算后，部分topic 有变化，其他服务订阅topics的信息时，会认为所有的都有变化吗
+// 1. 所有服务都watch , 感知其他服务的存在，并觉得哪个是leader， leader通过一定的算法，分配当前每个topic分别对应的services, 并更新到/ns/as/topics/xxx
+// 2. 每个服务都订阅/ns/as/topics/信息，并保存topic和service的对应关系, 供客户端获取，因为客户端发送或者订阅某个topic时，会优先连接topic对应的service,
+//    即topic和service的对应关系作为client的推荐建议，即推荐客户端对某个topic的操作
+// 3. 但是客户端不一定按照推荐的来连接指定service, 比如：client连不上推荐的service,只能连任意一个service 或者部署的时候，用ngnix来作为统一负载入口, client 看到的只有一个入口
+//	  client 没有选service的权利, nginx有自己的负载算法来连接后端的service
+// 4. 所以需要有地方记录实时的topic 被客户端订阅在哪个service上，这样service之间转发topic public数据时，才能找到对应service,再有对应的service转发给订阅的client.
+// 	  + 如果用etcd 来记录真实实时的对应关系, 可以这样：/ns/as/ontime/topicX/service1,  /ns/as/ontime/topicX/service2, 这样就形成了topicX-->service1,service2的关系。
+//		  服务器需要把所有key关联一个租约，如果服务器挂了，etcd服务器自动删除该service 相关的信息，比如，/ns/as/ontime/topicX/service1，/ns/as/ontime/topicY/service1
+//		  其他所有服务只需要侦听/ns/as/ontime/，
+//    + 如果用redis 来记录实时的对应关系，可以以topicX作为一个set key, values 是 service1,service2..., 如果service1上有client订阅topic1,那么service自己负责在set:topic1 集合里加上service1
+//	      当service 接受到其他服务转发过来的数据时，如果发现数据的topic没有客户端在侦听，需要去redis 删除相关信息，并利用redis的pub sub 通知其他服务。
+//	  + 不需要中间件来同步topic-service对应关系，用gosip？ redis cluster 用了gossip 来同步信息, consul 也基于gossip的实现健康检查
 
 type ServiceInfo = ServiceConfig
 type ServiceConfig struct {
@@ -60,6 +69,7 @@ type Service struct {
 func (s ServiceInfo) String() string {
 	return fmt.Sprintf("%s-%s", s.Name, s.Id)
 }
+
 func NewService(sc *ServiceConfig) (*Service, error) {
 	//检查参数,设置默认值
 	if sc.Id == "" {
@@ -287,7 +297,8 @@ func findLeader(list []ServiceConfig) *ServiceConfig {
 
 func (s *Service) StartDiscovTopics() error {
 	return DiscovTopics(s.sc.Etcd.Hosts, s.TopicsPath(), func(vals []string) {
-		topicMetadata := make(map[string]string, len(vals))
+		// 这是leader 经过负载算法计算后推荐的 topic-->service 信息
+		distributedTopics := make(map[string]string, len(vals))
 		if s.topicPerKey {
 			for _, v := range vals {
 				topic, services, err := parseTopicData(v)
@@ -295,7 +306,7 @@ func (s *Service) StartDiscovTopics() error {
 					logx.Error(err)
 					continue
 				}
-				topicMetadata[topic] = services
+				distributedTopics[topic] = services
 			}
 		} else {
 			if len(vals) == 0 {
@@ -312,20 +323,10 @@ func (s *Service) StartDiscovTopics() error {
 					logx.Error(err)
 					continue
 				}
-				topicMetadata[topic] = services
+				distributedTopics[topic] = services
 			}
 		}
-		logx.Infof("%s, get len:%d topicMetadata:%+v", s.sc.String(), len(topicMetadata), topicMetadata)
-		has_service2 := false
-		for _, service := range topicMetadata {
-			if service == "topic_service-2" {
-				has_service2 = true
-				break
-			}
-		}
-		if !has_service2 {
-			logx.Info("-----------no service2-----------------")
-		}
+		logx.Infof("%s, get len:%d distributedTopics:%+v", s.sc.String(), len(distributedTopics), distributedTopics)
 	})
 }
 
