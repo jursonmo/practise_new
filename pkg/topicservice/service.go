@@ -16,19 +16,19 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// 1. 所有服务都watch , 感知其他服务的存在，并觉得哪个是leader， leader通过一定的算法，分配当前每个topic分别对应的services, 并更新到/ns/as/topics/xxx
-// 2. 每个服务都订阅/ns/as/topics/信息，并保存topic和service的对应关系, 供客户端获取，因为客户端发送或者订阅某个topic时，会优先连接topic对应的service,
-//    即topic和service的对应关系作为client的推荐建议，即推荐客户端对某个topic的操作
-// 3. 但是客户端不一定按照推荐的来连接指定service, 比如：client连不上推荐的service,只能连任意一个service 或者部署的时候，用ngnix来作为统一负载入口, client 看到的只有一个入口
-//	  client 没有选service的权利, nginx有自己的负载算法来连接后端的service
-// 4. 所以需要有地方记录实时的topic 被客户端订阅在哪个service上，这样service之间转发topic public数据时，才能找到对应service,再有对应的service转发给订阅的client.
-// 	  + 如果用etcd 来记录真实实时的对应关系, 可以这样：/ns/as/ontime/topicX/service1,  /ns/as/ontime/topicX/service2, 这样就形成了topicX-->service1,service2的关系。
-//		  服务器需要把所有key关联一个租约，如果服务器挂了，etcd服务器自动删除该service 相关的信息，比如，/ns/as/ontime/topicX/service1，/ns/as/ontime/topicY/service1
-//		  其他所有服务只需要侦听/ns/as/ontime/，
-//    + 如果用redis 来记录实时的对应关系，可以以topicX作为一个set key, values 是 service1,service2..., 如果service1上有client订阅topic1,那么service自己负责在set:topic1 集合里加上service1
-//	      当service 接受到其他服务转发过来的数据时，如果发现数据的topic没有客户端在侦听，需要去redis 删除相关信息，并利用redis的pub sub 通知其他服务。
-//	  + 不需要中间件来同步topic-service对应关系，用gosip？ redis cluster 用了gossip 来同步信息, consul 也基于gossip的实现健康检查
-
+//  1. 所有服务都watch , 感知其他服务的存在，并觉得哪个是leader， leader通过一定的算法，分配当前每个topic分别对应的services, 并更新到/ns/as/topics/xxx
+//  2. 每个服务都订阅/ns/as/topics/信息，并保存topic和service的对应关系, 供客户端获取，因为客户端发送或者订阅某个topic时，会优先连接topic对应的service,
+//     即topic和service的对应关系作为client的推荐建议，即推荐客户端对某个topic的操作
+//  3. 但是客户端不一定按照推荐的来连接指定service, 比如：client连不上推荐的service,只能连任意一个service 或者部署的时候，用ngnix来作为统一负载入口, client 看到的只有一个入口
+//     client 没有选service的权利, nginx有自己的负载算法来连接后端的service
+//  4. 所以需要有地方记录实时的topic 被客户端订阅在哪个service上，这样service之间转发topic public数据时，才能找到对应service,再有对应的service转发给订阅的client.
+//     + 如果用etcd 来记录真实实时的对应关系, 可以这样：/ns/as/ontime/topicX/service1,  /ns/as/ontime/topicX/service2, 这样就形成了topicX-->service1,service2的关系。
+//     服务器需要把所有key关联一个租约，如果服务器挂了，etcd服务器自动删除该service 相关的信息，比如，/ns/as/ontime/topicX/service1，/ns/as/ontime/topicY/service1
+//     其他所有服务只需要侦听/ns/as/ontime/，
+//     + 如果用redis 来记录实时的对应关系，可以以topicX作为一个set key, values 是 service1,service2..., 如果service1上有client订阅topic1,那么service自己负责在set:topic1 集合里加上service1
+//     当service 接受到其他服务转发过来的数据时，如果发现数据的topic没有客户端在侦听，需要去redis 删除相关信息，并利用redis的pub sub 通知其他服务。
+//     + 不需要中间件来同步topic-service对应关系，用gosip？ redis cluster 用了gossip 来同步slot信息, consul 也基于gossip的实现健康检查, 区块链等项目都有使用Gossip
+//     目前已经可以用gossip 来同步topic-service的对应关系. TODO: 有客户端订阅topic时，service.AddTopicState(topic) 通知其他服务，
 type ServiceInfo = ServiceConfig
 type ServiceConfig struct {
 	Name      string            `json:"name,optional"`
@@ -41,6 +41,13 @@ type ServiceConfig struct {
 	Etcd      discov.EtcdConf   //`json:"-"` //注册到哪里去, 完整的注册路径: /ns/as/key/id
 	IsLeader  bool              `json:",optional"` // 配置是否是leader，多个服务可以设置都设置了该配置，Id最小的那个是leader
 	Metadata  map[string]string `json:",optional"`
+	Gossip    GossipConf        `json:",optional"`
+}
+
+type GossipConf struct {
+	Enabled bool   `json:",optional"`
+	Addr    string `json:",optional"`
+	Port    int    `json:",optional"`
 }
 
 const (
@@ -56,6 +63,8 @@ type Service struct {
 	isLeader  bool //是否是leader, 只有leader才会分配topic和service(broker)的对应关系
 	pubClient *discov.Publisher
 
+	topicState *TopicState
+
 	balance     *Balance
 	serviceList []ServiceInfo
 	topics      []string
@@ -64,10 +73,21 @@ type Service struct {
 	topicPerKey bool
 	//topic和service的对应关系
 	// topicServiceMap map[string]*ServiceConfig
+
+	distributedTopics map[string]string
 }
 
 func (s ServiceInfo) String() string {
 	return fmt.Sprintf("%s-%s", s.Name, s.Id)
+}
+
+// 服务器唯一Key,唯一标识一个服务
+func (s *Service) Key() string {
+	return s.sc.String()
+}
+
+func (s *Service) Endpoints() []string {
+	return s.sc.Endpoints
 }
 
 func NewService(sc *ServiceConfig) (*Service, error) {
@@ -88,7 +108,7 @@ func NewService(sc *ServiceConfig) (*Service, error) {
 	// 补充key的完整路径，方便后面的订阅
 	sc.Etcd.Key = fmt.Sprintf("/%s/%s/%s", sc.Ns, sc.As, sc.Etcd.Key)
 
-	return &Service{
+	s := &Service{
 		sc: sc,
 		//balance: DefaultBalance, //应该每个服务创建一个Balance
 		balance: NewBalance(&myConsistentHash{
@@ -97,8 +117,18 @@ func NewService(sc *ServiceConfig) (*Service, error) {
 			desc:  "consistent hash balance alg",
 		}), //默认使用一致性hash算法
 		//topicServiceMap: make(map[string]*ServiceConfig),
-	}, nil
+	}
+
+	if s.sc.Gossip.Enabled {
+		topicState, err := NewTopicState(s.Key(), sc.Gossip.Addr, sc.Gossip.Port)
+		if err != nil {
+			panic(err)
+		}
+		s.topicState = topicState
+	}
+	return s, nil
 }
+
 func (s *Service) SetDefaultBalancer(balance ServiceBalancer) {
 	s.balance.UpdateDefaultBalancer(balance)
 }
@@ -121,6 +151,23 @@ func (s *Service) Start(ctx context.Context) error {
 	if err := s.StartDiscovTopics(); err != nil {
 		return err
 	}
+
+	//gossip
+	if s.topicState != nil {
+		//记录当前topics, 不广播。如果在加入集群前, 发布自己的topics , 会发生什么。
+		s.topicState.UpdateTopic(ADD, s.topics, false) //表示所有服务器都订阅了这几个topics
+
+		//定时打印topic state
+		go func() {
+			for {
+				time.Sleep(time.Second * 10)
+				logx.Info("----topic state members:", s.topicState.Members())
+				logx.Info("----topic state local topics:", s.topicState.GetLocalTopics())
+				logx.Infof("----topic state global topics:%+v", s.topicState.GetTopics())
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -145,6 +192,17 @@ func (s *Service) Stop() error {
 		s.etcdClient.Close()
 	}
 	return nil
+}
+
+func (s *Service) AddTopicState(topic string) {
+	if s.topicState != nil {
+		s.topicState.AddTopic([]string{topic})
+	}
+}
+func (s *Service) DelTopicState(topic string) {
+	if s.topicState != nil {
+		s.topicState.DelTopic([]string{topic})
+	}
 }
 func (s *Service) SetTopics(topics []string) {
 	s.Lock()
@@ -183,6 +241,8 @@ func (s *Service) StartDiscovService() error {
 			logx.Info("serviceList no change")
 			return nil
 		}
+		s.serviceList = list
+
 		leader := findLeader(list)
 		if leader == nil {
 			return errors.New("leader == nil")
@@ -213,6 +273,14 @@ func (s *Service) StartDiscovService() error {
 			if err != nil {
 				logx.Error(err)
 			}
+
+			// 由leader 去join 其他的service
+			logx.Info("i am leader, so gossip join other service")
+			err = s.ServicesJoin()
+			if err != nil {
+				logx.Error(err)
+			}
+			logx.Info("topicState members:", s.topicState.Members())
 		} else {
 			logx.Infof("I am not the leader, leader is %+v", leader)
 			// 如果不是leader ,
@@ -224,6 +292,37 @@ func (s *Service) StartDiscovService() error {
 		}
 		return nil
 	})
+	return nil
+}
+
+func (s *Service) ServicesJoin() error {
+	if s.topicState == nil {
+		return nil
+	}
+
+	topicStateNode := make([]string, 0, len(s.serviceList))
+	for _, service := range s.serviceList {
+		// 排除自己
+		if service.Id == s.sc.Id {
+			continue
+		}
+		//如果服务节点没有开启gossip， 就不加入
+		if !service.Gossip.Enabled {
+			continue
+		}
+		topicStateNode = append(topicStateNode, fmt.Sprintf("%s:%d", service.Gossip.Addr, service.Gossip.Port))
+	}
+
+	logx.Info("topicStateNode:", topicStateNode)
+	if len(topicStateNode) == 0 {
+		return nil
+	}
+	err := s.topicState.Join(topicStateNode)
+	if err != nil {
+		logx.Error("topicState join err:", err)
+		return err
+	}
+
 	return nil
 }
 
@@ -283,7 +382,7 @@ func findLeader(list []ServiceConfig) *ServiceConfig {
 		return &leaders[0]
 	}
 	if len(leaders) == 0 {
-		logx.Errorf("no leader found, chose min id")
+		logx.Info("no leader found, chose min id")
 	}
 
 	leader := list[0]
@@ -293,6 +392,12 @@ func findLeader(list []ServiceConfig) *ServiceConfig {
 		}
 	}
 	return &leader
+}
+
+func (s *Service) SetDistributedTopics(topics map[string]string) {
+	s.Lock()
+	defer s.Unlock()
+	s.distributedTopics = topics
 }
 
 func (s *Service) StartDiscovTopics() error {
@@ -327,6 +432,8 @@ func (s *Service) StartDiscovTopics() error {
 			}
 		}
 		logx.Infof("%s, get len:%d distributedTopics:%+v", s.sc.String(), len(distributedTopics), distributedTopics)
+		//保存指派的topic和service对应关系
+		s.SetDistributedTopics(distributedTopics)
 	})
 }
 
