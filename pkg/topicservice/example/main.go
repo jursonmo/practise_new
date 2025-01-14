@@ -9,6 +9,7 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
+// 此文件用于测试etcd 服务的leader选举， topics 发现和分配，以及把分配的结果同步到etcd 服务上，让其他服务可以知道分配的结果。
 // ./main 1 false
 // ./main 2 true //看2号服务能否抢占成为leader
 func init() {
