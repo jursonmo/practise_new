@@ -81,8 +81,8 @@ openssl req -x509 -new -nodes -key ca.key -sha256 -out ca.crt -subj "/CN=My CA"
 openssl genrsa -out server.key 2048
 openssl req -new -key server.key -out server.csr -subj "/CN=YourMosquittoServer"
 
-# 签署服务器证书
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -sha256
+# 签署服务器证书, x509 表示证书类型, x509类型才可以设置有效期, days 表示证书有效期
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -sha256  -days 9999
 
 
 #### 查看日志
