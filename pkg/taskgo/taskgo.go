@@ -180,5 +180,4 @@ func (tg *TaskGo) StopAndWait(d time.Duration) error {
 		//task下的所有goroutine都已经退出了
 		return nil
 	}
-	return nil
 }
