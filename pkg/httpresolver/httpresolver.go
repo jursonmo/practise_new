@@ -71,12 +71,11 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]strin
 	return nil, fmt.Errorf("no preset IP for %s", host)
 }
 
-// 创建自定义 HTTP 客户端
-func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Client {
+func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Transport {
 	if resolver == nil {
 		resolver = DefaultFallbackResolver
 	}
-	transport := &http.Transport{
+	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -110,9 +109,12 @@ func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(h
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+}
 
+// 创建自定义 HTTP 客户端
+func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Client {
 	return &http.Client{
-		Transport: transport,
+		Transport: NewHttpResolverTransport(resolver, printResolveResult),
 		Timeout:   10 * time.Second,
 	}
 }
