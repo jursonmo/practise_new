@@ -1,13 +1,17 @@
 package httpresolver
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jursonmo/practise_new/pkg/combinederror"
 )
 
 var DefaultFallbackResolver *FallbackResolver
@@ -18,6 +22,10 @@ func init() {
 
 func AddDomainIp(domain string, ips ...string) {
 	DefaultFallbackResolver.AddPreset(domain, ips...)
+}
+
+func LoadDomains(filePath string) error {
+	return DefaultFallbackResolver.LoadDomains(filePath)
 }
 
 // 自定义 DNS 解析器
@@ -41,6 +49,45 @@ func (r *FallbackResolver) AddPreset(domain string, ips ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.presetIPs[domain] = ips
+}
+
+func (r *FallbackResolver) LoadDomains(filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// 使用scanner逐行读取文件
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 分割域名和IP部分
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			fmt.Printf("无效的行格式: %s\n", line)
+			continue
+		}
+
+		domain := parts[0]
+		ipString := strings.Join(parts[1:], " ") // 合并后面的部分(处理可能有多个空格的情况)
+
+		// 去除IP字符串中的逗号，然后分割成IP列表
+		ipString = strings.ReplaceAll(ipString, ",", " ")
+		ips := strings.Fields(ipString)
+
+		// 打印结果(在实际应用中，你可以在这里使用domain和ips变量)
+		fmt.Printf("域名: %s\n", domain)
+		fmt.Printf("IP地址: %v\n", ips)
+		fmt.Println("------")
+		r.AddPreset(domain, ips...)
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("读取文件出错:", err)
+	}
+	return nil
 }
 
 // 自定义解析逻辑
@@ -93,15 +140,15 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 			}
 
 			// 尝试所有解析到的 IP
-			var lastErr error
+			combinederror := combinederror.NewCombinedError()
 			for _, ip := range ips {
 				conn, err := net.DialTimeout(network, net.JoinHostPort(ip, port), 2*time.Second)
 				if err == nil {
 					return conn, nil
 				}
-				lastErr = err
+				combinederror.Append(err)
 			}
-			return nil, lastErr
+			return nil, combinederror
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,

@@ -29,9 +29,17 @@ func main() {
 	_, err = client.Get("https://xxx.sfasdfasdfasdf.com")
 	if err != nil {
 		log.Printf("get err:%v", err)
-		return
+		//return
 	}
 	//验证结果能解析到指定的ip.
 	// 2025/07/07 17:27:59 host:xx.sfasdfasdfasdf.com resolve ips: [127.0.0.1]
 	// 2025/07/07 17:27:59 get err:Get "https://xx.sfasdfasdfasdf.com": dial tcp 127.0.0.1:443: connect: connection refused
+
+	//下面验证LoadDomains
+	httpresolver.LoadDomains("domains.txt")
+	_, err = client.Get("https://xxx.testloaddomains.com")
+	if err != nil {
+		log.Printf("get err:%v", err)
+		return
+	}
 }
