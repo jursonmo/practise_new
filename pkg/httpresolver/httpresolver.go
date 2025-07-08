@@ -93,6 +93,24 @@ func (r *FallbackResolver) LoadDomains(filePath string) error {
 // 自定义解析逻辑
 func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
 	// 1. 先尝试系统 DNS 解析
+	// 域名解释的超时时间 不要超过client timeout 设定的超时时间，不然域名解释失败后，留给后续使用指定ip 连接的时间就不够了
+	var timeRemaining time.Duration
+	deadline, ok := ctx.Deadline()
+	if ok {
+		// ctx 设置了截止时间
+		timeRemaining = time.Until(deadline) // 计算剩余时间
+		//fmt.Printf("Context will expire at: %v, remaining: %v\n", deadline, timeRemaining)
+	}
+	dnsTimeout := timeRemaining - 2*time.Second
+	if dnsTimeout > 5*time.Second {
+		dnsTimeout = 5 * time.Second
+	}
+	if dnsTimeout < 2*time.Second {
+		dnsTimeout = 2 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
+	defer cancel()
 	ips, err := r.systemResolver.LookupHost(ctx, host)
 	if err == nil {
 		return ips, nil
