@@ -168,9 +168,14 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 
 			// 尝试所有解析到的 IP
 			combinederror := combinederror.NewCombinedError()
-			for _, ip := range ips {
+			for i, ip := range ips {
 				conn, err := net.DialTimeout(network, net.JoinHostPort(ip, port), 2*time.Second)
 				if err == nil {
+					if i != 0 {
+						//如果前面的ip是连不上的，那么现在这个ip 连上了，放在第一位，以后优先选它
+						//switch with ip0
+						ips[i], ips[0] = ips[0], ips[i]
+					}
 					return conn, nil
 				}
 				combinederror.Append(err)
