@@ -15,9 +15,14 @@ import (
 )
 
 var DefaultFallbackResolver *FallbackResolver
+var defaultHttpClient *http.Client
 
 func init() {
 	DefaultFallbackResolver = NewFallbackResolver()
+	defaultHttpClient = &http.Client{
+		Transport: NewHttpResolverTransport(DefaultFallbackResolver, nil),
+		Timeout:   10 * time.Second,
+	}
 }
 
 func AddDomainIp(domain string, ips ...string) {
@@ -94,19 +99,23 @@ func (r *FallbackResolver) LoadDomains(filePath string) error {
 func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
 	// 1. 先尝试系统 DNS 解析
 	// 域名解释的超时时间 不要超过client timeout 设定的超时时间，不然域名解释失败后，留给后续使用指定ip 连接的时间就不够了
-	var timeRemaining time.Duration
+	var dnsTimeout time.Duration
 	deadline, ok := ctx.Deadline()
 	if ok {
 		// ctx 设置了截止时间
-		timeRemaining = time.Until(deadline) // 计算剩余时间
+		timeRemaining := time.Until(deadline) // 计算剩余时间, 默认client.Timeout是10秒的话,这里就是10秒
 		//fmt.Printf("Context will expire at: %v, remaining: %v\n", deadline, timeRemaining)
+		// if timeRemaining >= 5*time.Second {
+		// 	dnsTimeout = timeRemaining - 2*time.Second //至少留两秒来连接服务器
+		// } else if timeRemaining >= 4*time.Second {
+		// 	dnsTimeout = timeRemaining - 1500*time.Millisecond //留1.5秒连接服务器
+		// }
+		dnsTimeout = timeRemaining * 2 / 3 //三分之二的时间用于dns查询，最大不能超过5秒，超过5秒就用自己预设的ip来连接了
 	}
-	dnsTimeout := timeRemaining - 2*time.Second
-	if dnsTimeout > 5*time.Second {
+
+	//如果不设置超时或者超时时间超过5秒，统一设置成5秒
+	if dnsTimeout == 0 || dnsTimeout > 5*time.Second {
 		dnsTimeout = 5 * time.Second
-	}
-	if dnsTimeout < 2*time.Second {
-		dnsTimeout = 2 * time.Second
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
@@ -115,7 +124,7 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]strin
 	if err == nil {
 		return ips, nil
 	}
-
+	fmt.Printf("take %v system dns get host:%s fail, try to get ip from presetIPs", dnsTimeout, host)
 	// 2. 系统解析失败时检查预设 IP
 	r.mu.RLock()
 	presetIP, ok := r.presetIPs[host]
@@ -182,4 +191,12 @@ func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(h
 		Transport: NewHttpResolverTransport(resolver, printResolveResult),
 		Timeout:   10 * time.Second,
 	}
+}
+
+func GetDefaultHttpClient() *http.Client {
+	return defaultHttpClient
+}
+
+func GetDefaultTransport() http.RoundTripper {
+	return defaultHttpClient.Transport
 }
