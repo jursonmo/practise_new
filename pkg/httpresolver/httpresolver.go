@@ -36,8 +36,9 @@ func LoadDomains(filePath string) error {
 // 自定义 DNS 解析器
 type FallbackResolver struct {
 	systemResolver *net.Resolver
-	presetIPs      map[string][]string // 域名 -> 预设 IP
 	mu             sync.RWMutex
+	resolveCache   map[string][]string
+	presetIPs      map[string][]string // 域名 -> 预设 IP
 }
 
 func NewFallbackResolver() *FallbackResolver {
@@ -45,7 +46,8 @@ func NewFallbackResolver() *FallbackResolver {
 		systemResolver: &net.Resolver{
 			PreferGo: false, // 优先使用系统 DNS
 		},
-		presetIPs: make(map[string][]string),
+		presetIPs:    make(map[string][]string),
+		resolveCache: make(map[string][]string),
 	}
 }
 
@@ -82,9 +84,7 @@ func (r *FallbackResolver) LoadDomains(filePath string) error {
 		ipString = strings.ReplaceAll(ipString, ",", " ")
 		ips := strings.Fields(ipString)
 
-		// 打印结果(在实际应用中，你可以在这里使用domain和ips变量)
-		fmt.Printf("域名: %s\n", domain)
-		fmt.Printf("IP地址: %v\n", ips)
+		fmt.Printf("加载域名: %s, ips:%v\n", domain, ips)
 		fmt.Println("------")
 		r.AddPreset(domain, ips...)
 	}
@@ -103,7 +103,7 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]strin
 	deadline, ok := ctx.Deadline()
 	if ok {
 		// ctx 设置了截止时间
-		timeRemaining := time.Until(deadline) // 计算剩余时间, 默认client.Timeout是10秒的话,这里就是10秒
+		timeRemaining := time.Until(deadline) // 计算剩余时间, 如果设置client.Timeout是10秒的话,这里就是10秒
 		//fmt.Printf("Context will expire at: %v, remaining: %v\n", deadline, timeRemaining)
 		// if timeRemaining >= 5*time.Second {
 		// 	dnsTimeout = timeRemaining - 2*time.Second //至少留两秒来连接服务器
@@ -122,33 +122,44 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]strin
 	defer cancel()
 	ips, err := r.systemResolver.LookupHost(ctx, host)
 	if err == nil {
+		r.mu.RLock()
+		r.resolveCache[host] = ips
+		r.mu.RUnlock()
 		return ips, nil
 	}
-	fmt.Printf("take %v system dns get host:%s fail, try to get ip from presetIPs", dnsTimeout, host)
-	// 2. 系统解析失败时检查预设 IP
-	r.mu.RLock()
-	presetIP, ok := r.presetIPs[host]
-	r.mu.RUnlock()
+	fmt.Printf("take %v system dns get host:%s fail\n", dnsTimeout, host)
+	return nil, err
 
-	if ok {
-		return presetIP, nil
-	}
+	// // 2. 系统解析失败时检查预设 IP
+	// r.mu.RLock()
+	// defer r.mu.RUnlock()
+	// presetIP, ok := r.presetIPs[host]
 
-	//3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
-	for domain, ips := range r.presetIPs {
-		if strings.HasSuffix(host, domain) {
-			return ips, nil
-		}
-	}
+	// if ok {
+	// 	return presetIP, nil
+	// }
 
-	// 4. 返回错误
-	return nil, fmt.Errorf("no preset IP for %s", host)
+	// //3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
+	// for domain, ips := range r.presetIPs {
+	// 	if strings.HasSuffix(host, domain) {
+	// 		return ips, nil
+	// 	}
+	// }
+
+	// //4. 尝试返回之前成功的ip
+	// if ips, ok := r.resolveCache[host]; ok {
+	// 	return ips, nil
+	// }
+
+	// // 5. 返回错误
+	//return nil, fmt.Errorf("no preset IP for %s", host)
 }
 
 func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Transport {
 	if resolver == nil {
 		resolver = DefaultFallbackResolver
 	}
+
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
@@ -156,11 +167,41 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 				return nil, err
 			}
 
+			var inCache bool
+			var inPreSet bool
 			// 使用自定义解析器解析域名
 			ips, err := resolver.LookupHost(ctx, host)
+			resolver.mu.RLock()
 			if err != nil {
-				return nil, err
+				fmt.Printf("try to get ip from presetIPs or cache for host:%s \n", host)
+				// 2. 系统解析失败时检查预设 IP
+
+				presetIP, ok := resolver.presetIPs[host]
+
+				if ok {
+					ips = presetIP
+					inPreSet = true
+					goto GetIpDone
+				}
+
+				//3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
+				for domain, setips := range resolver.presetIPs {
+					if strings.HasSuffix(host, domain) {
+						ips = setips
+						goto GetIpDone
+					}
+				}
+
+				//4. 尝试返回之前成功的ip
+				if cacheips, ok := resolver.resolveCache[host]; ok {
+					ips = cacheips
+					inCache = true
+					goto GetIpDone
+				}
 			}
+
+		GetIpDone:
+			resolver.mu.RUnlock()
 
 			if printResolveResult != nil {
 				printResolveResult(host, ips)
@@ -172,9 +213,17 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 				conn, err := net.DialTimeout(network, net.JoinHostPort(ip, port), 2*time.Second)
 				if err == nil {
 					if i != 0 {
+						resolver.mu.Lock()
 						//如果前面的ip是连不上的，那么现在这个ip 连上了，放在第一位，以后优先选它
 						//switch with ip0
 						ips[i], ips[0] = ips[0], ips[i]
+						if inPreSet {
+							resolver.presetIPs[host] = ips
+						}
+						if inCache {
+							resolver.resolveCache[host] = ips
+						}
+						resolver.mu.Unlock()
 					}
 					return conn, nil
 				}
