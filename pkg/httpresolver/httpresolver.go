@@ -96,7 +96,7 @@ func (r *FallbackResolver) LoadDomains(filePath string) error {
 }
 
 // 自定义解析逻辑
-func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+func (r *FallbackResolver) LookupHost(ctx context.Context, host string) (ips []string, inPreSet bool, inCache bool, err error) {
 	// 1. 先尝试系统 DNS 解析
 	// 域名解释的超时时间 不要超过client timeout 设定的超时时间，不然域名解释失败后，留给后续使用指定ip 连接的时间就不够了
 	var dnsTimeout time.Duration
@@ -120,42 +120,41 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) ([]strin
 
 	ctx, cancel := context.WithTimeout(ctx, dnsTimeout)
 	defer cancel()
-	ips, err := r.systemResolver.LookupHost(ctx, host)
+	ips, err = r.systemResolver.LookupHost(ctx, host)
 	if err == nil {
 		r.mu.RLock()
 		r.resolveCache[host] = ips
 		r.mu.RUnlock()
-		return ips, nil
+		return ips, false, false, nil
 	}
-	fmt.Printf("take %v system dns get host:%s fail\n", dnsTimeout, host)
-	return nil, err
+	fmt.Printf(" system dns take %v to get host:%s fail, err:%v, try to get ip from presetIPs or cache\n", dnsTimeout, host, err)
 
-	// // 2. 系统解析失败时检查预设 IP
-	// r.mu.RLock()
-	// defer r.mu.RUnlock()
-	// presetIP, ok := r.presetIPs[host]
+	// 2. 系统解析失败时检查预设 IP
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	presetIP, ok := r.presetIPs[host]
 
-	// if ok {
-	// 	return presetIP, nil
-	// }
+	if ok {
+		return presetIP, true, false, nil
+	}
 
-	// //3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
-	// for domain, ips := range r.presetIPs {
-	// 	if strings.HasSuffix(host, domain) {
-	// 		return ips, nil
-	// 	}
-	// }
+	//3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
+	for domain, ips := range r.presetIPs {
+		if strings.HasSuffix(host, domain) {
+			return ips, true, false, nil
+		}
+	}
 
-	// //4. 尝试返回之前成功的ip
-	// if ips, ok := r.resolveCache[host]; ok {
-	// 	return ips, nil
-	// }
+	//4. 尝试返回之前成功的ip
+	if ips, ok := r.resolveCache[host]; ok {
+		return ips, false, true, nil
+	}
 
-	// // 5. 返回错误
-	//return nil, fmt.Errorf("no preset IP for %s", host)
+	// 5. 返回错误
+	return nil, false, false, fmt.Errorf("no preset IP for %s", host)
 }
 
-func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Transport {
+func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult func(host string, ip []string, inPreset, inCache bool)) *http.Transport {
 	if resolver == nil {
 		resolver = DefaultFallbackResolver
 	}
@@ -167,44 +166,14 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 				return nil, err
 			}
 
-			var inCache bool
-			var inPreSet bool
 			// 使用自定义解析器解析域名
-			ips, err := resolver.LookupHost(ctx, host)
-			resolver.mu.RLock()
+			ips, inPreSet, inCache, err := resolver.LookupHost(ctx, host)
 			if err != nil {
-				fmt.Printf("try to get ip from presetIPs or cache for host:%s \n", host)
-				// 2. 系统解析失败时检查预设 IP
-
-				presetIP, ok := resolver.presetIPs[host]
-
-				if ok {
-					ips = presetIP
-					inPreSet = true
-					goto GetIpDone
-				}
-
-				//3. 如果精准无法匹配，采用后缀匹配, 即请求 abc.example.com 可以返回 example.com 预设的ip
-				for domain, setips := range resolver.presetIPs {
-					if strings.HasSuffix(host, domain) {
-						ips = setips
-						goto GetIpDone
-					}
-				}
-
-				//4. 尝试返回之前成功的ip
-				if cacheips, ok := resolver.resolveCache[host]; ok {
-					ips = cacheips
-					inCache = true
-					goto GetIpDone
-				}
+				return nil, err
 			}
 
-		GetIpDone:
-			resolver.mu.RUnlock()
-
 			if printResolveResult != nil {
-				printResolveResult(host, ips)
+				printResolveResult(host, ips, inPreSet, inCache)
 			}
 
 			// 尝试所有解析到的 IP
@@ -240,7 +209,7 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 }
 
 // 创建自定义 HTTP 客户端
-func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(host string, ip []string)) *http.Client {
+func NewHttpResolverClient(resolver *FallbackResolver, printResolveResult func(host string, ip []string, inPreset, inCache bool)) *http.Client {
 	return &http.Client{
 		Transport: NewHttpResolverTransport(resolver, printResolveResult),
 		Timeout:   10 * time.Second,

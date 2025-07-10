@@ -8,8 +8,8 @@ import (
 )
 
 func main() {
-	client := httpresolver.NewHttpResolverClient(nil, func(host string, ips []string) {
-		log.Printf("host:%s resolve ips: %v", host, ips)
+	client := httpresolver.NewHttpResolverClient(nil, func(host string, ips []string, inPreset, inCache bool) {
+		log.Printf("host:%s resolve ips: %v, inPreset:%v, inCache:%v", host, ips, inPreset, inCache)
 	})
 	resp, err := client.Get("http://www.baidu.com")
 	if err != nil {
