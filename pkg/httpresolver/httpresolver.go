@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jursonmo/practise_new/pkg/combinederror"
+	//lru "github.com/hashicorp/golang-lru/v2"
+	lru "github.com/hashicorp/golang-lru" //为了使用老的golang 版本.
 )
 
 var DefaultFallbackResolver *FallbackResolver
@@ -37,17 +39,22 @@ func LoadDomains(filePath string) error {
 type FallbackResolver struct {
 	systemResolver *net.Resolver
 	mu             sync.RWMutex
-	resolveCache   map[string][]string
-	presetIPs      map[string][]string // 域名 -> 预设 IP
+	//resolveCache   map[string][]string
+	lruCache  *lru.Cache          //使用指定大小的lru,避免map存储的key 过多
+	presetIPs map[string][]string // 域名 -> 预设 IP
 }
 
 func NewFallbackResolver() *FallbackResolver {
+	cache, err := lru.New(128)
+	if err != nil {
+		return nil
+	}
 	return &FallbackResolver{
 		systemResolver: &net.Resolver{
 			PreferGo: false, // 优先使用系统 DNS
 		},
-		presetIPs:    make(map[string][]string),
-		resolveCache: make(map[string][]string),
+		presetIPs: make(map[string][]string),
+		lruCache:  cache,
 	}
 }
 
@@ -122,9 +129,7 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) (ips []s
 	defer cancel()
 	ips, err = r.systemResolver.LookupHost(ctx, host)
 	if err == nil {
-		r.mu.RLock()
-		r.resolveCache[host] = ips
-		r.mu.RUnlock()
+		r.lruCache.Add(host, ips)
 		return ips, false, false, nil
 	}
 	fmt.Printf(" system dns take %v to get host:%s fail, err:%v, try to get ip from presetIPs or cache\n", dnsTimeout, host, err)
@@ -146,8 +151,8 @@ func (r *FallbackResolver) LookupHost(ctx context.Context, host string) (ips []s
 	}
 
 	//4. 尝试返回之前成功的ip
-	if ips, ok := r.resolveCache[host]; ok {
-		return ips, false, true, nil
+	if v, ok := r.lruCache.Get(host); ok {
+		return v.([]string), false, true, nil
 	}
 
 	// 5. 返回错误
@@ -189,10 +194,10 @@ func NewHttpResolverTransport(resolver *FallbackResolver, printResolveResult fun
 						if inPreSet {
 							resolver.presetIPs[host] = ips
 						}
-						if inCache {
-							resolver.resolveCache[host] = ips
-						}
 						resolver.mu.Unlock()
+						if inCache {
+							resolver.lruCache.Add(host, ips)
+						}
 					}
 					return conn, nil
 				}
