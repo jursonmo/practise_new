@@ -35,18 +35,23 @@ func main() {
 	f := &FlowMgr{
 		conn: conn,
 	}
-	f.GetFlows()
+	f.DumpFlows()
 	f.WatchFlow()
 
 }
 
-func (f *FlowMgr) GetFlows() {
+func (f *FlowMgr) DumpFlows() {
 	c := f.conn
 	opts := conntrack.DumpOptions{
 		ZeroCounters: false,
 	}
 
 	flows, err := c.Dump(&opts)
+	// 用来过滤 conntrack 表中的 mark ctmark flows
+	// flows, err := c.DumpFilter(conntrack.Filter{
+	// 	Mark: 0,
+	// 	Mask: 0,
+	// }, &opts)
 
 	if err != nil {
 		fmt.Printf("get conntrack flows err: %v", err)
@@ -67,7 +72,32 @@ func (f *FlowMgr) WatchFlow() {
 
 	events := make(chan conntrack.Event, 100)
 	defer close(events)
-	// 订阅 conntrack 的新建和删除事件
+
+	go func() {
+		for event := range events {
+			if event.Flow == nil {
+				continue
+			}
+			// // 过滤 mark ctmark flows
+			// if event.Flow.Mark == 0 {
+			// 	continue
+			// }
+			if event.Flow.Status.SrcNAT() || event.Flow.Status.DstNAT() {
+				switch event.Type {
+				case conntrack.EventNew:
+					logger.Printf("new nat flow: %v", event.Flow)
+					key := getFlowKey(&event.Flow.TupleOrig)
+					f.NatFlow.Store(key, event.Flow)
+				case conntrack.EventDestroy:
+					logger.Printf("destroy nat flow: %v", event.Flow)
+					key := getFlowKey(&event.Flow.TupleOrig)
+					f.NatFlow.Delete(key)
+				}
+			}
+		}
+	}()
+
+	// 订阅 conntrack 的新建和删除事件, 这里没法只侦听 mark ctmark flows, 只能拿到所有的事件再过滤。
 	errChan, err := c.Listen(events, 1, []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
 	if err != nil {
 		logger.Printf("listen conntrack err: %v", err)
@@ -80,21 +110,5 @@ func (f *FlowMgr) WatchFlow() {
 		os.Exit(1)
 	}
 	logger.Printf("watch conntrack event")
-	for event := range events {
-		if event.Flow == nil {
-			continue
-		}
-		if event.Flow.Status.SrcNAT() || event.Flow.Status.DstNAT() {
-			switch event.Type {
-			case conntrack.EventNew:
-				logger.Printf("new nat flow: %v", event.Flow)
-				key := getFlowKey(&event.Flow.TupleOrig)
-				f.NatFlow.Store(key, event.Flow)
-			case conntrack.EventDestroy:
-				logger.Printf("destroy nat flow: %v", event.Flow)
-				key := getFlowKey(&event.Flow.TupleOrig)
-				f.NatFlow.Delete(key)
-			}
-		}
-	}
+
 }
