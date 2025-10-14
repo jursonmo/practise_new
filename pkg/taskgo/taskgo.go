@@ -20,7 +20,7 @@ const (
 type TaskGo struct {
 	ctx       context.Context
 	cancel    context.CancelFunc //取消任务时默认都调用context.CancelFunc
-	canceFunc func()             //用户自定义自己取消任务的handler,
+	canceFunc func()             //用户自定义自己取消任务的回调handler, 必须是非阻塞。默认为空。
 	tasks     map[string]*TaskState
 	sync.Mutex
 	status   int32
@@ -78,9 +78,18 @@ func (tg *TaskGo) Go(taskName string, f func(ctx context.Context) error) error {
 	tg.tasksNum += 1
 
 	go func() {
-		defer recover()
-		err := f(tg.ctx)
-		tg.done(ts, err)
+		var err error
+		defer func() {
+			if r := recover(); r != nil {
+				if v, ok := r.(error); ok {
+					err = fmt.Errorf("panic recover:%w", v)
+				} else {
+					err = fmt.Errorf("panic recover:%v", r)
+				}
+			}
+			tg.done(ts, err)
+		}()
+		err = f(tg.ctx)
 	}()
 	return nil
 }
@@ -163,10 +172,19 @@ func (tg *TaskGo) iterTasksState(condition func(ts *TaskState) bool) []TaskState
 }
 
 func (tg *TaskGo) StopAndWait(d time.Duration) error {
-	if tg.IsStoped() {
+	// if tg.IsStoped() {
+	// 	return errors.New("already stoped")
+	// }
+	// tg.Stop()
+	//上面这两个操作不能保证原子性; 用下面的方式来确保只有一个goroutine能执行到后面的取消任务。
+	tg.Lock()
+	if tg.status == Stoped {
+		tg.Unlock()
 		return errors.New("already stoped")
 	}
-	tg.Stop()
+	tg.status = Stoped
+	tg.Unlock()
+
 	tg.cancel()
 	if tg.canceFunc != nil {
 		tg.canceFunc()
