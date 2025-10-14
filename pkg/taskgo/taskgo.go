@@ -45,7 +45,7 @@ func (tg *TaskGo) SetCancelFunc(f func()) {
 	tg.canceFunc = f
 }
 
-func (tg *TaskGo) Stop() {
+func (tg *TaskGo) stop() {
 	tg.Lock()
 	defer tg.Unlock()
 	tg.status = Stoped
@@ -175,7 +175,7 @@ func (tg *TaskGo) StopAndWait(d time.Duration) error {
 	// if tg.IsStoped() {
 	// 	return errors.New("already stoped")
 	// }
-	// tg.Stop()
+	// tg.stop()
 	//上面这两个操作不能保证原子性; 用下面的方式来确保只有一个goroutine能执行到后面的取消任务。
 	tg.Lock()
 	if tg.status == Stoped {
