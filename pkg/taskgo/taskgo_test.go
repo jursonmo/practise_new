@@ -186,12 +186,10 @@ func TestTaskGo_StopAndWaitTimeout(t *testing.T) {
 	// 创建一个不会结束的任务
 	taskName := "never-ending-task"
 	tg.Go(taskName, func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			// 即使上下文取消，也继续等待很长时间，模拟无法正常退出的任务
-			time.Sleep(1 * time.Second)
-			return ctx.Err()
-		}
+		<-ctx.Done()
+		// 即使上下文取消，也继续等待很长时间，模拟无法正常退出的任务
+		time.Sleep(1 * time.Second)
+		return ctx.Err()
 	})
 
 	// 停止任务管理器，但设置一个短超时
