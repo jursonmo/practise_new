@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 
@@ -30,6 +31,8 @@ func main() {
 		logger.Println(err)
 		return
 	}
+	conn.SetReadBuffer(1024 * 1024 * 3)
+
 	defer conn.Close()
 
 	f := &FlowMgr{
@@ -70,7 +73,7 @@ func (f *FlowMgr) WatchFlow() {
 	logger := log.New(os.Stderr, "conntrack: ", log.LstdFlags)
 	c := f.conn
 
-	events := make(chan conntrack.Event, 100)
+	events := make(chan conntrack.Event, 512)
 	defer close(events)
 
 	go func() {
@@ -96,9 +99,9 @@ func (f *FlowMgr) WatchFlow() {
 			}
 		}
 	}()
-
+	wokers := runtime.GOMAXPROCS(0)
 	// 订阅 conntrack 的新建和删除事件, 这里没法只侦听 mark ctmark flows, 只能拿到所有的事件再过滤。
-	errChan, err := c.Listen(events, 1, []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
+	errChan, err := c.Listen(events, uint8(wokers), []netfilter.NetlinkGroup{netfilter.GroupCTNew, netfilter.GroupCTDestroy})
 	if err != nil {
 		logger.Printf("listen conntrack err: %v", err)
 		return
