@@ -31,6 +31,7 @@ func main() {
 		logger.Println(err)
 		return
 	}
+	// 设置 conntrack 表的读取缓冲区大小为 3MB, 避免 listen 提示 "no buffer space available"ß
 	conn.SetReadBuffer(1024 * 1024 * 3)
 
 	defer conn.Close()
