@@ -1,0 +1,15 @@
+
+[dingding]
+[dingding.testWebhook]
+webhookUrl = "test environment webhookUrl"
+msgType = "text"
+safeKeyWord = "xxx"
+#atMobiles = ["13800138000", "13900139000"]
+isAtAll = false
+
+[dingding.prodWebhook]
+webhookUrl = "product environment webhookUrl"
+msgType = "text"
+safeKeyWord = "yyy"
+#atMobiles = ["15000150000", "15100151000", "15200152000"]
+isAtAll = false
