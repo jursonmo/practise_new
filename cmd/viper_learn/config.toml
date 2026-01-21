@@ -1,0 +1,15 @@
+app_name = 'awesome web'
+log_level = 'DEBUG'
+top = 1
+
+[mysql]
+database = 'awesome'
+ip = '127.0.0.1'
+password = 123456
+port = 3306
+user = 'dj'
+
+[redis]
+ip = '127.0.0.1'
+port = 5381
+port2 = 5382
