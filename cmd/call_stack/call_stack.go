@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// 它在作用是打印整个函数调用顺序，这样可以快速了解复杂代码的调用过程。比如想快速学习某个开源库或者复杂的代码
 func main() {
 	fmt.Println("Hello, 世界")
 	var builder strings.Builder
